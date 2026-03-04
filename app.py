@@ -3,33 +3,51 @@ import pandas as pd
 from datetime import datetime
 import os
 
-# Configuración de la página
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Gestor de Repuestos", layout="wide")
 st.title("🛠️ Control de Repuestos - Reporte Semanal")
 
-archivo_nombre = "PEDIDOS.xlsx"
+# Archivos
+archivo_pedidos = "PEDIDOS.xlsx"
+archivo_contingencia = "contingencias.csv"
 
-if os.path.exists(archivo_nombre):
+# --- FUNCIONES DE MEMORIA (PERSISTENCIA) ---
+def cargar_contingencias():
+    if os.path.exists(archivo_contingencia):
+        try:
+            df_cont = pd.read_csv(archivo_contingencia)
+            return df_cont['Identificador'].tolist()
+        except:
+            return []
+    return []
+
+def guardar_contingencias(lista_items):
+    # Guardamos en un CSV aparte para que no se borre al cambiar el Excel semanal
+    df_save = pd.DataFrame({'Identificador': lista_items})
+    df_save.to_csv(archivo_contingencia, index=False)
+
+# --- INICIO DE LA APP ---
+if os.path.exists(archivo_pedidos):
     try:
-        df = pd.read_excel(archivo_nombre)
+        # 1. Cargar Pedidos
+        df = pd.read_excel(archivo_pedidos)
         
-        # --- 1. ESTANDARIZACIÓN DE NOMBRES ---
-        # Renombramos la Columna G (índice 6) a "Cod Equipo" para que sea uniforme
-        # Renombramos la Columna R (índice 17) a "Fecha"
-        df.rename(columns={df.columns[6]: 'Cod Equipo', df.columns[17]: 'Fecha'}, inplace=True)
+        # Renombrar columnas clave
+        df.rename(columns={
+            df.columns[1]: 'Producto', 
+            df.columns[6]: 'Cod Equipo', 
+            df.columns[17]: 'Fecha'
+        }, inplace=True)
 
-        # --- 2. PROCESAMIENTO ---
-        # Convertir fecha
+        # 2. Limpieza de Datos
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
         
-        # Lista de exclusión
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", 
                    "ENGRASADOR", "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", 
                    "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
         
-        # Filtros (Usando el nuevo nombre "Cod Equipo")
-        # Columna B es índice 1 (Producto) y E es índice 4 (Ubicación) - Las usamos por índice para seguridad
-        mask = (~df.iloc[:, 1].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
+        # Filtros Base (Bogotá, Sin exclusiones, Inventario > 0)
+        mask = (~df['Producto'].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
                (df.iloc[:, 4].astype(str).str.contains("Bogotá", case=False, na=False)) & \
                (~df['Cod Equipo'].astype(str).str.startswith('3')) & \
                (df['Cod Equipo'].astype(str) != "A.C.PM") & \
@@ -38,51 +56,81 @@ if os.path.exists(archivo_nombre):
 
         df_base = df[mask].copy()
         
-        # Calcular Días
+        # Crear ID Único (Producto + Equipo) para identificar exactamente cuál es contingencia
+        df_base['ID_Unico'] = df_base['Producto'].astype(str) + " (" + df_base['Cod Equipo'].astype(str) + ")"
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha']).dt.days
-        df_base = df_base.sort_values('Días en Almacén', ascending=False)
+
+        # --- 3. GESTIÓN DE CONTINGENCIA (MEMORIA) ---
+        st.sidebar.header("🛡️ Configurar Contingencia")
+        st.sidebar.info("Los items seleccionados aquí se moverán a la lista de 'Stock de Reserva' y saldrán de las alertas.")
+
+        # Cargar lo guardado anteriormente
+        contingencias_guardadas = cargar_contingencias()
         
-        # --- 3. MENÚ LATERAL INTERACTIVO ---
-        st.sidebar.header("🔍 Filtros")
+        # Listado de todos los items disponibles hoy
+        items_disponibles = sorted(df_base['ID_Unico'].unique())
         
-        # Obtener lista única de equipos (quitando vacíos)
-        lista_equipos = sorted(df_base['Cod Equipo'].dropna().astype(str).unique())
-        
-        # El multiselect usa la lista limpia
-        equipos_seleccionados = st.sidebar.multiselect(
-            "Filtrar por Cod Equipo:",
-            options=lista_equipos,
-            default=lista_equipos
+        # Selector Multiselect (Aquí digitas y seleccionas)
+        seleccion_contingencia = st.sidebar.multiselect(
+            "Digita los repuestos de reserva:",
+            options=items_disponibles,
+            default=[x for x in contingencias_guardadas if x in items_disponibles]
         )
         
-        # Aplicar el filtro del usuario
-        if equipos_seleccionados:
-            df_final = df_base[df_base['Cod Equipo'].astype(str).isin(equipos_seleccionados)]
-        else:
-            df_final = df_base
-        
-        # --- 4. MOSTRAR RESULTADOS ---
-        # Fecha de actualización del archivo
-        fecha_mod = datetime.fromtimestamp(os.path.getmtime(archivo_nombre)).strftime('%d/%m/%Y')
-        st.markdown(f"**Actualizado al:** {fecha_mod} | **Items:** {len(df_final)}")
+        # Guardar cambios automáticamente si el usuario modifica algo
+        if set(seleccion_contingencia) != set(contingencias_guardadas):
+            guardar_contingencias(seleccion_contingencia)
 
-        col1, col2 = st.columns([3, 1])
+        # --- 4. SEPARACIÓN DE LISTAS ---
+        # Lista A: Contingencia (Lo que seleccionaste)
+        df_contingencia = df_base[df_base['ID_Unico'].isin(seleccion_contingencia)]
         
-        with col1:
-            st.subheader("📋 Listado Detallado")
-            # Mostramos las columnas clave incluyendo "Cod Equipo"
-            cols_mostrar = [df.columns[1], 'Cod Equipo', df.columns[4], df.columns[11], 'Días en Almacén']
-            st.dataframe(df_final[cols_mostrar], use_container_width=True)
+        # Lista B: Pendientes Reales (Todo lo que NO es contingencia)
+        df_pendientes = df_base[~df_base['ID_Unico'].isin(seleccion_contingencia)]
+        
+        # Ordenar pendientes por antigüedad
+        df_pendientes = df_pendientes.sort_values('Días en Almacén', ascending=False)
+
+        # --- 5. VISUALIZACIÓN POR PESTAÑAS ---
+        fecha_mod = datetime.fromtimestamp(os.path.getmtime(archivo_pedidos)).strftime('%d/%m/%Y')
+        st.write(f"📅 **Datos del Excel cargado el:** {fecha_mod}")
+
+        # Creamos dos pestañas
+        tab1, tab2 = st.tabs(["🚨 PENDIENTES POR INSTALAR", "🛡️ STOCK DE CONTINGENCIA"])
+
+        with tab1:
+            st.markdown(f"### Items que requieren gestión ({len(df_pendientes)})")
+            if df_pendientes.empty:
+                st.success("¡Todo al día! No hay pendientes de instalación.")
+            else:
+                # Mostrar tabla limpia
+                cols_ver = ['Producto', 'Cod Equipo', 'UBICACIÓN', df.columns[11], 'Días en Almacén']
+                st.dataframe(df_pendientes[cols_ver], use_container_width=True)
+                
+                # Botón descarga SOLO pendientes
+                st.download_button(
+                    "📥 Descargar Lista de Pendientes",
+                    df_pendientes.to_csv(index=False).encode('utf-8'),
+                    "Pendientes_Instalacion.csv"
+                )
+
+        with tab2:
+            st.markdown(f"### Repuestos en Stock de Reserva ({len(df_contingencia)})")
+            st.info("Estos items no se consideran retrasados ya que son stock de seguridad.")
             
-        with col2:
-            st.subheader("📊 Estadísticas")
-            if not df_final.empty:
-                st.metric("Más Antiguo", f"{df_final['Días en Almacén'].max()} días")
-                st.metric("Promedio", f"{int(df_final['Días en Almacén'].mean())} días")
-                st.markdown("---")
-                st.bar_chart(df_final.head(5).set_index(df.columns[1])['Días en Almacén'])
+            if not df_contingencia.empty:
+                st.dataframe(df_contingencia[['Producto', 'Cod Equipo', 'UBICACIÓN', df.columns[11]]], use_container_width=True)
+                
+                # Botón descarga SOLO contingencia
+                st.download_button(
+                    "📥 Descargar Lista de Contingencia",
+                    df_contingencia.to_csv(index=False).encode('utf-8'),
+                    "Stock_Contingencia.csv"
+                )
+            else:
+                st.write("No hay repuestos marcados como contingencia.")
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.warning("⚠️ Sube el archivo 'PEDIDOS.xlsx' a GitHub.")
+    st.warning("⚠️ No se encuentra 'PEDIDOS.xlsx'. Súbelo a GitHub.")
