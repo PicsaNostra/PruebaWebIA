@@ -162,7 +162,7 @@ if os.path.exists(ARCHIVO_EXCEL):
                         emoji = "🟢 SEGUIMIENTO"
 
                     # 3. URL DE LA APP (¡PON TU LINK AQUÍ!)
-                    LINK_APP = "https://tu-app-repuestos.streamlit.app" 
+                    LINK_APP = "https://pruebawebia-sfayt38cvkueqghbajqrm7.streamlit.app/" 
 
                     # 4. Mensaje Corto y Directo
                     asunto_msg = f"Reporte Repuestos: {total} Pendientes"
