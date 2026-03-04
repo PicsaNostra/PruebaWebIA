@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
-import urllib.parse # Necesario para codificar los enlaces de whatsapp y correo
+import urllib.parse
 from github import Github
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -12,7 +12,7 @@ st.title("🛠️ Control de Repuestos - Gestión Total")
 # --- CONSTANTES Y ARCHIVOS ---
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
-REPO_NOMBRE = "TU_USUARIO/TU_REPO" # <--- ¡IMPORTANTE: CAMBIA ESTO POR TU USUARIO/REPO!
+REPO_NOMBRE = "TU_USUARIO/TU_REPO" # <--- ¡CAMBIA ESTO POR TU USUARIO/REPO!
 
 # --- FUNCIÓN CONEXIÓN GITHUB ---
 def subir_a_github(df_nuevo):
@@ -35,9 +35,9 @@ def subir_a_github(df_nuevo):
                 st.toast("✅ Cambios guardados en la Nube", icon="☁️")
             except:
                 repo.create_file(ARCHIVO_CSV, "Creación Inicial", content_csv)
-                st.toast("✅ Archivo de gestión creado en Nube", icon="✨")
+                st.toast("✅ Archivo creado en Nube", icon="✨")
         else:
-            st.warning("⚠️ No hay Token configurado. Los cambios solo se guardarán en local.")
+            st.warning("⚠️ Sin Token. Guardado Local.")
     except Exception as e:
         st.error(f"Error conectando con GitHub: {e}")
 
@@ -56,7 +56,7 @@ if os.path.exists(ARCHIVO_EXCEL):
         # 1. Cargar Excel
         df = pd.read_excel(ARCHIVO_EXCEL)
         
-        # 2. Renombrar Columnas (Ajustado a tu estructura)
+        # 2. Renombrar Columnas
         col_insumo = df.columns[0]  # A
         col_prod = df.columns[1]    # B
         col_equipo = df.columns[6]  # G
@@ -87,7 +87,8 @@ if os.path.exists(ARCHIVO_EXCEL):
         
         # Crear ID y Calcular Días
         df_base['ID_Unico'] = df_base['Producto'].astype(str) + df_base['Cod Equipo'].astype(str)
-        df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days
+        # Calculamos los días y rellenamos nulos con 0 para evitar errores visuales
+        df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
 
         # 4. Cruzar con Memoria
         df_memoria = cargar_csv_local()
@@ -106,8 +107,6 @@ if os.path.exists(ARCHIVO_EXCEL):
 
         # --- BARRA LATERAL ---
         st.sidebar.header("🔍 Buscador")
-        
-        # Filtros
         lista_prod = sorted(df_full['Producto'].astype(str).unique())
         filtro_prod = st.sidebar.multiselect("Filtrar Producto:", lista_prod)
         lista_eq = sorted(df_full['Cod Equipo'].astype(str).unique())
@@ -133,63 +132,45 @@ if os.path.exists(ARCHIVO_EXCEL):
 
         # --- PESTAÑAS ---
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
-        cols_view = ['Cód insumo', 'Producto', 'Cod Equipo']
+        
+        # --- COLUMNAS VISIBLES (AQUÍ AGREGAMOS LOS DÍAS) ---
+        cols_view = ['Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
         # === TAB 1: PENDIENTES ===
         with tab1:
-            df_p = df_view[df_view['Estado'] == 'PENDIENTE'].copy()
+            # Ordenamos por días (descendente) para ver lo más viejo primero
+            df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
             
             if df_p.empty:
                 st.success("✅ ¡Todo al día! No hay pendientes.")
             else:
-                # --- NOTIFICACIÓN TIPO SEMÁFORO (CORREGIDA) ---
-                with st.expander("📢 Enviar Alerta de Seguimiento", expanded=True):
-                    
-                    # 1. Datos Clave
+                # --- NOTIFICACIÓN SEMÁFORO ---
+                with st.expander("📢 Alerta de Seguimiento", expanded=True):
                     total = len(df_p)
-                    # Calculamos antigüedad máxima (si hay datos)
-                    if 'Días en Almacén' in df_p.columns and not df_p.empty:
-                        max_dias = int(df_p['Días en Almacén'].max())
-                    else:
-                        max_dias = 0
+                    max_dias = int(df_p['Días en Almacén'].max()) if not df_p.empty else 0
                     
-                    # 2. Lógica del Semáforo
-                    if max_dias > 30:
-                        emoji = "🔴 URGENTE"
-                    elif max_dias > 15:
-                        emoji = "🟠 ATENCIÓN"
-                    else:
-                        emoji = "🟢 SEGUIMIENTO"
+                    if max_dias > 30: emoji = "🔴 URGENTE"
+                    elif max_dias > 15: emoji = "🟠 ATENCIÓN"
+                    else: emoji = "🟢 SEGUIMIENTO"
 
-                    # 3. URL DE LA APP (¡PON TU LINK AQUÍ!)
-                    LINK_APP = "https://pruebawebia-sfayt38cvkueqghbajqrm7.streamlit.app/" 
+                    LINK_APP = "https://tu-app-repuestos.streamlit.app" # <--- PON TU LINK
 
-                    # 4. Mensaje Corto y Directo
-                    asunto_msg = f"Reporte Repuestos: {total} Pendientes"
                     cuerpo_msg = (
                         f"*{emoji}: REPORTE DE GESTIÓN*\n\n"
-                        f"⚠️ Pendientes por instalar: *{total}*\n"
-                        f"⏳ Antigüedad máxima: *{max_dias} días*\n\n"
-                        f"👉 *Ingresa aquí para gestionar:* \n{LINK_APP}"
+                        f"⚠️ Pendientes: *{total}*\n"
+                        f"⏳ Antigüedad Máx: *{max_dias} días*\n\n"
+                        f"👉 *Gestionar aquí:* \n{LINK_APP}"
                     )
                     
-                    st.info(f"Vista previa:\n\n{cuerpo_msg}")
-                    
+                    st.info(f"Vista previa:\n{cuerpo_msg}")
                     c_wa, c_mail = st.columns(2)
                     
-                    # WhatsApp (API Segura)
                     txt_wa = urllib.parse.quote(cuerpo_msg)
-                    link_wa = f"https://api.whatsapp.com/send?text={txt_wa}"
-                    c_wa.link_button("📲 Enviar Alerta (WhatsApp)", link_wa)
+                    c_wa.link_button("📲 WhatsApp", f"https://api.whatsapp.com/send?text={txt_wa}")
                     
-                    # Correo (FIXED: Codificación correcta para evitar errores)
-                    subject_encoded = urllib.parse.quote(asunto_msg)
+                    asunto_encoded = urllib.parse.quote(f"Seguimiento: {total} Pendientes")
                     body_encoded = urllib.parse.quote(cuerpo_msg)
-                    link_mail = f"mailto:?subject={subject_encoded}&body={body_encoded}"
-                    
-                    c_mail.link_button("📧 Enviar Alerta (Correo)", link_mail, help="Abre tu aplicación de correo predeterminada.")
-                    
-                    st.caption("Nota: Si el botón de correo no abre, asegúrate de tener Outlook o Correo configurado en tu PC.")
+                    c_mail.link_button("📧 Correo", f"mailto:?subject={asunto_encoded}&body={body_encoded}")
 
                 st.divider()
 
@@ -199,32 +180,33 @@ if os.path.exists(ARCHIVO_EXCEL):
                     df_p[['Seleccionar', 'Fecha_Prog'] + cols_view],
                     column_config={
                         "Seleccionar": st.column_config.CheckboxColumn(required=True),
-                        "Fecha_Prog": st.column_config.DateColumn("📅 Programación", format="DD/MM/YYYY")
+                        "Fecha_Prog": st.column_config.DateColumn("📅 Programación", format="DD/MM/YYYY"),
+                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días", format="%d días") # Formato bonito
                     },
                     disabled=cols_view, hide_index=True, key="ed_p"
                 )
                 
                 seleccionados = ed_p[ed_p['Seleccionar'] == True]
                 
-                # Botón Guardar Fechas
+                # Guardar Fecha
                 if st.button("💾 Guardar Fechas"):
                     nuevas_fechas = pd.to_datetime(ed_p['Fecha_Prog'])
                     for id_u, fecha in zip(df_p['ID_Unico'], nuevas_fechas):
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = fecha
                     guardar_cambios(df_full)
 
-                # Botones Mover
+                # Mover
                 if not seleccionados.empty:
                     st.write("---")
                     c1, c2 = st.columns(2)
                     ids = df_p.loc[seleccionados.index, 'ID_Unico'].values
                     
                     with c1:
-                        if st.button("✅ ENVIAR A COMPLETADOS", type="primary", use_container_width=True):
+                        if st.button("✅ MOVER A COMPLETADOS", type="primary", use_container_width=True):
                             df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
                             guardar_cambios(df_full)
                     with c2:
-                        if st.button("🛡️ ENVIAR A RESERVA", use_container_width=True):
+                        if st.button("🛡️ MOVER A RESERVA", use_container_width=True):
                             df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
                             guardar_cambios(df_full)
 
@@ -237,7 +219,10 @@ if os.path.exists(ARCHIVO_EXCEL):
                 df_r.insert(0, "Seleccionar", False)
                 ed_r = st.data_editor(
                     df_r[['Seleccionar'] + cols_view],
-                    column_config={"Seleccionar": st.column_config.CheckboxColumn()},
+                    column_config={
+                        "Seleccionar": st.column_config.CheckboxColumn(),
+                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días", format="%d días")
+                    },
                     disabled=cols_view, hide_index=True, key="ed_r"
                 )
                 sel_r = ed_r[ed_r['Seleccionar'] == True]
@@ -263,7 +248,10 @@ if os.path.exists(ARCHIVO_EXCEL):
                 df_c.insert(0, "Seleccionar", False)
                 ed_c = st.data_editor(
                     df_c[['Seleccionar'] + cols_view],
-                    column_config={"Seleccionar": st.column_config.CheckboxColumn()},
+                    column_config={
+                        "Seleccionar": st.column_config.CheckboxColumn(),
+                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días", format="%d días")
+                    },
                     disabled=cols_view, hide_index=True, key="ed_c"
                 )
                 sel_c = ed_c[ed_c['Seleccionar'] == True]
