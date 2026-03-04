@@ -11,7 +11,7 @@ st.title("🛠️ Control de Repuestos - Simplificado")
 # Nombres de archivos
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
-REPO_NOMBRE = "TU_USUARIO/TU_REPO" # <--- ¡RECUERDA PONER TU USUARIO/REPO AQUÍ!
+REPO_NOMBRE = "TU_USUARIO/TU_REPO" # <--- ¡IMPORTANTE: PON TU USUARIO/REPO AQUÍ!
 
 # --- CONEXIÓN CON GITHUB ---
 def subir_a_github(df_nuevo):
@@ -23,7 +23,7 @@ def subir_a_github(df_nuevo):
             try:
                 repo = g.get_user().get_repo(REPO_NOMBRE.split("/")[-1]) 
             except:
-                st.error("Revisa el nombre del repositorio en el código.")
+                st.error("No se encontró el repositorio. Revisa el nombre en el código.")
                 return
 
             content_csv = df_nuevo.to_csv(index=False)
@@ -36,7 +36,7 @@ def subir_a_github(df_nuevo):
                 repo.create_file(ARCHIVO_CSV, "Init App", content_csv)
                 st.toast("✅ Archivo Creado en Nube", icon="✨")
         else:
-            st.warning("No hay Token configurado. Guardado solo local.")
+            st.warning("⚠️ No hay Token configurado. Se guardará solo localmente.")
             
     except Exception as e:
         st.error(f"Error GitHub: {e}")
@@ -45,8 +45,7 @@ def subir_a_github(df_nuevo):
 def cargar_csv_local():
     if os.path.exists(ARCHIVO_CSV):
         try:
-            df = pd.read_csv(ARCHIVO_CSV)
-            return df
+            return pd.read_csv(ARCHIVO_CSV)
         except:
             return pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog'])
     return pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog'])
@@ -57,11 +56,11 @@ if os.path.exists(ARCHIVO_EXCEL):
         # 1. Cargar Excel
         df = pd.read_excel(ARCHIVO_EXCEL)
         
-        # Asignación de columnas (Ajusta índices si es necesario)
-        col_insumo = df.columns[0]
-        col_prod = df.columns[1]
-        col_equipo = df.columns[6]
-        col_fecha = df.columns[17]
+        # Mapeo de columnas
+        col_insumo = df.columns[0]  # A
+        col_prod = df.columns[1]    # B
+        col_equipo = df.columns[6]  # G
+        col_fecha = df.columns[17]  # R
 
         df.rename(columns={
             col_insumo: 'Cód insumo',
@@ -72,7 +71,7 @@ if os.path.exists(ARCHIVO_EXCEL):
 
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
-        # 2. Filtros
+        # 2. Filtros de Limpieza
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", 
                    "CORAZA", "LLANTA", "PINTURA"]
@@ -100,48 +99,75 @@ if os.path.exists(ARCHIVO_EXCEL):
             df_full['Fecha_Prog'] = None
 
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
-
-        # --- CORRECCIÓN DEL ERROR ---
-        # Convertimos forzosamente a datetime. Si falla, pone NaT (Not a Time)
+        # Corrección de Fechas para evitar error de edición
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # --- FILTROS VISUALES ---
-        st.sidebar.header("🔍 Buscar")
-        texto = st.sidebar.text_input("Escribe aquí:", "").lower()
+        # --- BARRA LATERAL: FILTROS Y DESCARGA ---
+        st.sidebar.header("🔍 Filtros")
         
-        if texto:
-            df_full = df_full[
-                df_full['Producto'].astype(str).str.lower().str.contains(texto) | 
-                df_full['Cod Equipo'].astype(str).str.lower().str.contains(texto) |
-                df_full['Cód insumo'].astype(str).str.lower().str.contains(texto)
-            ]
+        # 1. Buscador de Lista de PRODUCTOS
+        lista_productos = sorted(df_full['Producto'].dropna().astype(str).unique())
+        filtro_producto = st.sidebar.multiselect(
+            "Filtrar por Producto:",
+            options=lista_productos,
+            placeholder="Escribe o selecciona..."
+        )
 
-        # --- FUNCIÓN GUARDADO ---
-        def guardar_cambios_csv_y_nube(df_maestro):
+        # 2. Buscador de EQUIPOS (Opcional, útil tener ambos)
+        lista_equipos = sorted(df_full['Cod Equipo'].dropna().astype(str).unique())
+        filtro_equipo = st.sidebar.multiselect(
+            "Filtrar por Equipo:",
+            options=lista_equipos
+        )
+
+        # Aplicar Filtros
+        df_view = df_full.copy()
+        
+        if filtro_producto:
+            df_view = df_view[df_view['Producto'].astype(str).isin(filtro_producto)]
+            
+        if filtro_equipo:
+            df_view = df_view[df_view['Cod Equipo'].astype(str).isin(filtro_equipo)]
+
+        # --- SECCIÓN DE DESCARGA ---
+        st.sidebar.markdown("---")
+        st.sidebar.header("📂 Respaldo")
+        
+        # Guardamos el estado actual en memoria a un CSV temporal para descargar
+        csv_actual = df_full[['ID_Unico', 'Estado', 'Fecha_Prog']].to_csv(index=False).encode('utf-8')
+        
+        st.sidebar.download_button(
+            label="📥 Descargar Gestión (.csv)",
+            data=csv_actual,
+            file_name="datos_gestion.csv",
+            mime="text/csv",
+            help="Descarga el archivo con las fechas y estados actuales."
+        )
+
+        # --- FUNCIÓN DE GUARDADO ---
+        def guardar_cambios_central(df_maestro):
             datos_a_guardar = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
             datos_a_guardar.to_csv(ARCHIVO_CSV, index=False)
             subir_a_github(datos_a_guardar)
             st.rerun()
 
-        # --- PESTAÑAS ---
+        # --- PESTAÑAS PRINCIPALES ---
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
         cols_visuales = ['Cód insumo', 'Producto', 'Cod Equipo']
 
-        # === PESTAÑA 1: PENDIENTES ===
+        # === TAB 1: PENDIENTES ===
         with tab1:
-            df_p = df_full[df_full['Estado'] == 'PENDIENTE'].copy()
+            df_p = df_view[df_view['Estado'] == 'PENDIENTE'].copy()
             
             if df_p.empty:
-                st.success("No hay pendientes.")
+                st.success("No hay pendientes con los filtros actuales.")
             else:
                 df_p.insert(0, "Seleccionar", False)
                 
-                # Renderizar tabla
                 edited_p = st.data_editor(
                     df_p[['Seleccionar', 'Fecha_Prog'] + cols_visuales],
                     column_config={
                         "Seleccionar": st.column_config.CheckboxColumn(required=True),
-                        # Al haber convertido arriba, ahora DateColumn sí funcionará
                         "Fecha_Prog": st.column_config.DateColumn("📅 Programación", format="DD/MM/YYYY")
                     },
                     disabled=cols_visuales,
@@ -153,11 +179,15 @@ if os.path.exists(ARCHIVO_EXCEL):
                 
                 # Botón Guardar Fechas
                 if st.button("💾 Guardar Fechas"):
-                    # Actualizar maestro
-                    # Convertimos la fecha del editor al formato correcto antes de asignar
                     fechas_nuevas = pd.to_datetime(edited_p['Fecha_Prog'])
-                    df_full.loc[df_p.index, 'Fecha_Prog'] = fechas_nuevas
-                    guardar_cambios_csv_y_nube(df_full)
+                    # Usamos ID_Unico para mapear las fechas correctamente al dataframe maestro
+                    # Creamos un diccionario ID -> Fecha nueva
+                    mapa_fechas = dict(zip(df_p['ID_Unico'], dates_new := fechas_nuevas))
+                    # Actualizamos solo donde coincida el ID
+                    for id_u, fecha in zip(df_p['ID_Unico'], fechas_nuevas):
+                        df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = fecha
+                    
+                    guardar_cambios_central(df_full)
 
                 # Botones Mover
                 if not seleccionados.empty:
@@ -168,15 +198,15 @@ if os.path.exists(ARCHIVO_EXCEL):
                     with c1:
                         if st.button("✅ MOVER A COMPLETADOS", type="primary", use_container_width=True):
                             df_full.loc[df_full['ID_Unico'].isin(ids_sel), 'Estado'] = 'COMPLETADO'
-                            guardar_cambios_csv_y_nube(df_full)
+                            guardar_cambios_central(df_full)
                     with c2:
                         if st.button("🛡️ MOVER A RESERVA", use_container_width=True):
                             df_full.loc[df_full['ID_Unico'].isin(ids_sel), 'Estado'] = 'RESERVA'
-                            guardar_cambios_csv_y_nube(df_full)
+                            guardar_cambios_central(df_full)
 
-        # === PESTAÑA 2: RESERVA ===
+        # === TAB 2: RESERVA ===
         with tab2:
-            df_r = df_full[df_full['Estado'] == 'RESERVA'].copy()
+            df_r = df_view[df_view['Estado'] == 'RESERVA'].copy()
             if df_r.empty:
                 st.info("Nada en reserva.")
             else:
@@ -192,13 +222,13 @@ if os.path.exists(ARCHIVO_EXCEL):
                 if not sel_r.empty and st.button("🔙 Devolver a Pendientes"):
                     ids = df_r.loc[sel_r.index, 'ID_Unico'].values
                     df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
-                    guardar_cambios_csv_y_nube(df_full)
+                    guardar_cambios_central(df_full)
 
-        # === PESTAÑA 3: COMPLETADOS ===
+        # === TAB 3: COMPLETADOS ===
         with tab3:
-            df_c = df_full[df_full['Estado'] == 'COMPLETADO'].copy()
+            df_c = df_view[df_view['Estado'] == 'COMPLETADO'].copy()
             if df_c.empty:
-                st.info("Vacío.")
+                st.info("Historial vacío.")
             else:
                 df_c.insert(0, "Seleccionar", False)
                 edited_c = st.data_editor(
@@ -212,9 +242,9 @@ if os.path.exists(ARCHIVO_EXCEL):
                 if not sel_c.empty and st.button("Restaurar a Pendientes"):
                     ids = df_c.loc[sel_c.index, 'ID_Unico'].values
                     df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
-                    guardar_cambios_csv_y_nube(df_full)
+                    guardar_cambios_central(df_full)
 
     except Exception as e:
         st.error(f"Error cargando archivo: {e}")
 else:
-    st.warning("⚠️ No se encuentra 'PEDIDOS.xlsx'")
+    st.warning("⚠️ No se encuentra 'PEDIDOS.xlsx'. Súbelo a GitHub.")
