@@ -5,48 +5,44 @@ import os
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Gestor de Repuestos", layout="wide")
-st.title("🛠️ Control de Repuestos - Reporte Semanal")
+st.title("🛠️ Control de Repuestos - Gestión Interactiva")
 
 # Archivos
 archivo_pedidos = "PEDIDOS.xlsx"
 archivo_contingencia = "contingencias.csv"
 
-# --- FUNCIONES DE MEMORIA (PERSISTENCIA) ---
+# --- FUNCIONES DE MEMORIA ---
 def cargar_contingencias():
     if os.path.exists(archivo_contingencia):
         try:
-            df_cont = pd.read_csv(archivo_contingencia)
-            return df_cont['Identificador'].tolist()
+            return pd.read_csv(archivo_contingencia)['Identificador'].tolist()
         except:
             return []
     return []
 
 def guardar_contingencias(lista_items):
-    # Guardamos en un CSV aparte para que no se borre al cambiar el Excel semanal
-    df_save = pd.DataFrame({'Identificador': lista_items})
-    df_save.to_csv(archivo_contingencia, index=False)
+    pd.DataFrame({'Identificador': list(set(lista_items))}).to_csv(archivo_contingencia, index=False)
 
 # --- INICIO DE LA APP ---
 if os.path.exists(archivo_pedidos):
     try:
-        # 1. Cargar Pedidos
+        # 1. Cargar y Limpiar
         df = pd.read_excel(archivo_pedidos)
         
-        # Renombrar columnas clave
+        # Renombrar columnas clave (Indices fijos)
         df.rename(columns={
             df.columns[1]: 'Producto', 
             df.columns[6]: 'Cod Equipo', 
             df.columns[17]: 'Fecha'
         }, inplace=True)
 
-        # 2. Limpieza de Datos
         df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
         
+        # Filtros Duros
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", 
                    "ENGRASADOR", "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", 
                    "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
         
-        # Filtros Base (Bogotá, Sin exclusiones, Inventario > 0)
         mask = (~df['Producto'].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
                (df.iloc[:, 4].astype(str).str.contains("Bogotá", case=False, na=False)) & \
                (~df['Cod Equipo'].astype(str).str.startswith('3')) & \
@@ -56,81 +52,112 @@ if os.path.exists(archivo_pedidos):
 
         df_base = df[mask].copy()
         
-        # Crear ID Único (Producto + Equipo) para identificar exactamente cuál es contingencia
+        # Crear ID Único
         df_base['ID_Unico'] = df_base['Producto'].astype(str) + " (" + df_base['Cod Equipo'].astype(str) + ")"
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha']).dt.days
 
-        # --- 3. GESTIÓN DE CONTINGENCIA (MEMORIA) ---
-        st.sidebar.header("🛡️ Configurar Contingencia")
-        st.sidebar.info("Los items seleccionados aquí se moverán a la lista de 'Stock de Reserva' y saldrán de las alertas.")
+        # Cargar memoria de contingencia
+        lista_contingencia = cargar_contingencias()
 
-        # Cargar lo guardado anteriormente
-        contingencias_guardadas = cargar_contingencias()
+        # --- BARRA LATERAL (FILTROS DE VISUALIZACIÓN) ---
+        st.sidebar.header("🔍 Filtros de Búsqueda")
         
-        # Listado de todos los items disponibles hoy
-        items_disponibles = sorted(df_base['ID_Unico'].unique())
+        # Buscador
+        texto_busqueda = st.sidebar.text_input("Buscar (Producto/Equipo):", "")
         
-        # Selector Multiselect (Aquí digitas y seleccionas)
-        seleccion_contingencia = st.sidebar.multiselect(
-            "Digita los repuestos de reserva:",
-            options=items_disponibles,
-            default=[x for x in contingencias_guardadas if x in items_disponibles]
-        )
-        
-        # Guardar cambios automáticamente si el usuario modifica algo
-        if set(seleccion_contingencia) != set(contingencias_guardadas):
-            guardar_contingencias(seleccion_contingencia)
+        # Filtro Equipo
+        equipos_unicos = sorted(df_base['Cod Equipo'].astype(str).unique())
+        filtro_equipo = st.sidebar.multiselect("Filtrar por Equipo:", options=equipos_unicos)
 
-        # --- 4. SEPARACIÓN DE LISTAS ---
-        # Lista A: Contingencia (Lo que seleccionaste)
-        df_contingencia = df_base[df_base['ID_Unico'].isin(seleccion_contingencia)]
-        
-        # Lista B: Pendientes Reales (Todo lo que NO es contingencia)
-        df_pendientes = df_base[~df_base['ID_Unico'].isin(seleccion_contingencia)]
-        
-        # Ordenar pendientes por antigüedad
-        df_pendientes = df_pendientes.sort_values('Días en Almacén', ascending=False)
+        # Aplicar Filtros Visuales
+        df_view = df_base.copy()
+        if texto_busqueda:
+            term = texto_busqueda.lower()
+            df_view = df_view[
+                df_view['Producto'].astype(str).str.lower().str.contains(term) | 
+                df_view['Cod Equipo'].astype(str).str.lower().str.contains(term)
+            ]
+        if filtro_equipo:
+            df_view = df_view[df_view['Cod Equipo'].astype(str).isin(filtro_equipo)]
 
-        # --- 5. VISUALIZACIÓN POR PESTAÑAS ---
+        # Separar en dos DataFrames
+        df_pendientes = df_view[~df_view['ID_Unico'].isin(lista_contingencia)].copy()
+        df_reserva = df_view[df_view['ID_Unico'].isin(lista_contingencia)].copy()
+
+        # Columnas a mostrar
+        cols_mostrar = ['Producto', 'Cod Equipo', df.columns[4], 'Días en Almacén']
+
+        # --- INTERFAZ PRINCIPAL ---
         fecha_mod = datetime.fromtimestamp(os.path.getmtime(archivo_pedidos)).strftime('%d/%m/%Y')
-        st.write(f"📅 **Datos del Excel cargado el:** {fecha_mod}")
+        st.write(f"📅 **Datos actualizados al:** {fecha_mod}")
 
-        # Creamos dos pestañas
-        tab1, tab2 = st.tabs(["🚨 PENDIENTES POR INSTALAR", "🛡️ STOCK DE CONTINGENCIA"])
+        tab1, tab2 = st.tabs([f"🚨 PENDIENTES ({len(df_pendientes)})", f"🛡️ RESERVA / CONTINGENCIA ({len(df_reserva)})"])
 
+        # --- PESTAÑA 1: PENDIENTES ---
         with tab1:
-            st.markdown(f"### Items que requieren gestión ({len(df_pendientes)})")
-            if df_pendientes.empty:
-                st.success("¡Todo al día! No hay pendientes de instalación.")
-            else:
-                # Mostrar tabla limpia
-                cols_ver = ['Producto', 'Cod Equipo', 'UBICACIÓN', df.columns[11], 'Días en Almacén']
-                st.dataframe(df_pendientes[cols_ver], use_container_width=True)
+            st.info("Selecciona los items que quieras enviar a reserva y presiona el botón.")
+            
+            # Preparamos dataframe para edición (añadimos columna checkbox)
+            df_p_edit = df_pendientes.copy()
+            df_p_edit.insert(0, "Seleccionar", False) # Columna de checks al inicio
+            
+            # Editor interactivo
+            editor_pendientes = st.data_editor(
+                df_p_edit[['Seleccionar'] + cols_mostrar],
+                column_config={"Seleccionar": st.column_config.CheckboxColumn("Mover?", help="Marca para mover a reserva", default=False)},
+                disabled=cols_mostrar, # Bloqueamos edición de datos, solo permitimos el check
+                hide_index=True,
+                key="editor_pendientes"
+            )
+
+            # Detectar seleccionados
+            seleccionados_p = editor_pendientes[editor_pendientes['Seleccionar'] == True]
+            
+            if not seleccionados_p.empty:
+                ids_a_mover = df_pendientes.loc[seleccionados_p.index, 'ID_Unico'].tolist()
+                st.write(f"Has seleccionado {len(ids_a_mover)} items.")
                 
-                # Botón descarga SOLO pendientes
-                st.download_button(
-                    "📥 Descargar Lista de Pendientes",
-                    df_pendientes.to_csv(index=False).encode('utf-8'),
-                    "Pendientes_Instalacion.csv"
+                if st.button("🛡️ Mover a Contingencia", type="primary"):
+                    nueva_lista = lista_contingencia + ids_a_mover
+                    guardar_contingencias(nueva_lista)
+                    st.success("Items movidos a reserva exitosamente.")
+                    st.rerun()
+
+        # --- PESTAÑA 2: RESERVA ---
+        with tab2:
+            st.warning("Selecciona los items que quieras devolver a pendientes (Instalación).")
+            
+            if df_reserva.empty:
+                st.write("No hay items en reserva.")
+            else:
+                # Preparamos dataframe para edición
+                df_r_edit = df_reserva.copy()
+                df_r_edit.insert(0, "Seleccionar", False)
+                
+                # Editor interactivo
+                editor_reserva = st.data_editor(
+                    df_r_edit[['Seleccionar'] + cols_mostrar],
+                    column_config={"Seleccionar": st.column_config.CheckboxColumn("Devolver?", help="Marca para devolver a pendientes", default=False)},
+                    disabled=cols_mostrar,
+                    hide_index=True,
+                    key="editor_reserva"
                 )
 
-        with tab2:
-            st.markdown(f"### Repuestos en Stock de Reserva ({len(df_contingencia)})")
-            st.info("Estos items no se consideran retrasados ya que son stock de seguridad.")
-            
-            if not df_contingencia.empty:
-                st.dataframe(df_contingencia[['Producto', 'Cod Equipo', 'UBICACIÓN', df.columns[11]]], use_container_width=True)
+                # Detectar seleccionados
+                seleccionados_r = editor_reserva[editor_reserva['Seleccionar'] == True]
                 
-                # Botón descarga SOLO contingencia
-                st.download_button(
-                    "📥 Descargar Lista de Contingencia",
-                    df_contingencia.to_csv(index=False).encode('utf-8'),
-                    "Stock_Contingencia.csv"
-                )
-            else:
-                st.write("No hay repuestos marcados como contingencia.")
+                if not seleccionados_r.empty:
+                    ids_a_devolver = df_reserva.loc[seleccionados_r.index, 'ID_Unico'].tolist()
+                    st.write(f"Has seleccionado {len(ids_a_devolver)} items.")
+                    
+                    if st.button("🚨 Devolver a Pendientes"):
+                        # Filtramos para quitar los seleccionados
+                        lista_actualizada = [x for x in lista_contingencia if x not in ids_a_devolver]
+                        guardar_contingencias(lista_actualizada)
+                        st.success("Items devueltos a pendientes exitosamente.")
+                        st.rerun()
 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.warning("⚠️ No se encuentra 'PEDIDOS.xlsx'. Súbelo a GitHub.")
+    st.warning("⚠️ No se encuentra el archivo 'PEDIDOS.xlsx'.")
