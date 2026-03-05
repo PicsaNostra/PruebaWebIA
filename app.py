@@ -12,36 +12,44 @@ st.title("🛠️ Control de Repuestos - Gestión Total")
 # --- CONSTANTES Y ARCHIVOS ---
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
-REPO_NOMBRE = "PicsaNostra/PruebaWebIA" # <--- ¡CAMBIA ESTO POR TU USUARIO/REPO!
 
-# --- FUNCIÓN CONEXIÓN GITHUB ---
+# ¡OJO! Asegúrate de que este sea tu usuario y repositorio exacto
+REPO_NOMBRE = "PicsaNostra/PruebaWebIA" 
+
+# --- FUNCIÓN CONEXIÓN GITHUB (SEGURA) ---
 def subir_a_github(df_nuevo):
-    """Guarda el archivo CSV de gestión en la nube (GitHub)"""
+    """Guarda el archivo CSV de gestión en la nube (GitHub) usando el Token secreto"""
     try:
+        # Aquí el código busca la llave en la caja fuerte de Streamlit
         if "GITHUB_TOKEN" in st.secrets:
-            token = st.secrets["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"]
+            token = st.secrets["GITHUB_TOKEN"]
             g = Github(token)
+            
             try:
+                # Intenta conectarse al repositorio
                 repo = g.get_user().get_repo(REPO_NOMBRE.split("/")[-1]) 
             except:
-                st.error("Error: No encuentro el repositorio. Revisa la variable REPO_NOMBRE.")
+                st.error(f"Error: No encuentro el repositorio '{REPO_NOMBRE}'. Verifica que esté bien escrito.")
                 return
 
+            # Convierte los datos a formato CSV
             content_csv = df_nuevo.to_csv(index=False)
             
             try:
+                # Si el archivo ya existe, lo actualiza
                 contents = repo.get_contents(ARCHIVO_CSV)
                 repo.update_file(contents.path, "Actualización desde App", content_csv, contents.sha)
-                st.toast("✅ Cambios guardados en la Nube", icon="☁️")
+                st.toast("✅ Cambios guardados en la Nube exitosamente", icon="☁️")
             except:
+                # Si no existe, lo crea por primera vez
                 repo.create_file(ARCHIVO_CSV, "Creación Inicial", content_csv)
-                st.toast("✅ Archivo creado en Nube", icon="✨")
+                st.toast("✅ Archivo de memoria creado en Nube", icon="✨")
         else:
-            st.warning("⚠️ Sin Token. Guardado Local.")
+            st.warning("⚠️ No has configurado el Token en Secrets. Los cambios NO se guardarán.")
     except Exception as e:
         st.error(f"Error conectando con GitHub: {e}")
 
-# --- CARGA LOCAL ---
+# --- CARGA LOCAL (LECTURA RÁPIDA) ---
 def cargar_csv_local():
     if os.path.exists(ARCHIVO_CSV):
         try:
@@ -56,7 +64,7 @@ if os.path.exists(ARCHIVO_EXCEL):
         # 1. Cargar Excel
         df = pd.read_excel(ARCHIVO_EXCEL)
         
-        # 2. Renombrar Columnas
+        # 2. Renombrar Columnas (Adaptado a tu formato)
         col_insumo = df.columns[0]  # A
         col_prod = df.columns[1]    # B
         col_equipo = df.columns[6]  # G
@@ -85,12 +93,14 @@ if os.path.exists(ARCHIVO_EXCEL):
 
         df_base = df[mask].copy()
         
-        # Crear ID y Calcular Días
+        # Crear ID Único y Calcular Días
         df_base['ID_Unico'] = df_base['Producto'].astype(str) + df_base['Cod Equipo'].astype(str)
-        # Calculamos los días y rellenamos nulos con 0 para evitar errores visuales
+        
+        # Calculamos días transcurridos (si es negativo o nulo, ponemos 0)
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
+        df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
 
-        # 4. Cruzar con Memoria
+        # 4. Cruzar con Memoria (Lo que guardamos ayer)
         df_memoria = cargar_csv_local()
         
         if not df_memoria.empty:
@@ -105,7 +115,7 @@ if os.path.exists(ARCHIVO_EXCEL):
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # --- BARRA LATERAL ---
+        # --- BARRA LATERAL (FILTROS) ---
         st.sidebar.header("🔍 Buscador")
         lista_prod = sorted(df_full['Producto'].astype(str).unique())
         filtro_prod = st.sidebar.multiselect("Filtrar Producto:", lista_prod)
@@ -117,35 +127,36 @@ if os.path.exists(ARCHIVO_EXCEL):
         if filtro_prod: df_view = df_view[df_view['Producto'].astype(str).isin(filtro_prod)]
         if filtro_eq: df_view = df_view[df_view['Cod Equipo'].astype(str).isin(filtro_eq)]
 
-        # Respaldo
+        # Botón de Respaldo Manual
         st.sidebar.markdown("---")
         st.sidebar.header("📂 Respaldo")
         csv_data = df_full[['ID_Unico', 'Estado', 'Fecha_Prog']].to_csv(index=False).encode('utf-8')
-        st.sidebar.download_button("📥 Descargar Gestión (.csv)", csv_data, "datos_gestion.csv", "text/csv")
+        st.sidebar.download_button("📥 Descargar Copia (.csv)", csv_data, "datos_gestion.csv", "text/csv")
 
-        # Función Guardar
+        # --- FUNCIÓN CENTRAL DE GUARDADO ---
         def guardar_cambios(df_maestro):
+            # Guardamos solo las columnas clave para no hacer pesado el archivo
             datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
-            datos.to_csv(ARCHIVO_CSV, index=False)
-            subir_a_github(datos)
-            st.rerun()
+            datos.to_csv(ARCHIVO_CSV, index=False) # Guarda localmente
+            subir_a_github(datos) # Sube a la nube
+            st.rerun() # Recarga la página para ver cambios
 
-        # --- PESTAÑAS ---
+        # --- PESTAÑAS DE GESTIÓN ---
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
         
-        # --- COLUMNAS VISIBLES (AQUÍ AGREGAMOS LOS DÍAS) ---
+        # Columnas que se mostrarán en las tablas
         cols_view = ['Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
         # === TAB 1: PENDIENTES ===
         with tab1:
-            # Ordenamos por días (descendente) para ver lo más viejo primero
+            # Ordenamos por antigüedad (los más viejos arriba)
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
             
             if df_p.empty:
                 st.success("✅ ¡Todo al día! No hay pendientes.")
             else:
-                # --- NOTIFICACIÓN SEMÁFORO ---
-                with st.expander("📢 Alerta de Seguimiento", expanded=True):
+                # --- NOTIFICACIÓN SEMÁFORO (CORREO Y WHATSAPP) ---
+                with st.expander("📢 Enviar Alerta de Seguimiento", expanded=True):
                     total = len(df_p)
                     max_dias = int(df_p['Días en Almacén'].max()) if not df_p.empty else 0
                     
@@ -153,7 +164,7 @@ if os.path.exists(ARCHIVO_EXCEL):
                     elif max_dias > 15: emoji = "🟠 ATENCIÓN"
                     else: emoji = "🟢 SEGUIMIENTO"
 
-                    LINK_APP = "https://tu-app-repuestos.streamlit.app" # <--- PON TU LINK
+                    LINK_APP = "https://pruebawebia.streamlit.app" # <--- Tu link real
 
                     cuerpo_msg = (
                         f"*{emoji}: REPORTE DE GESTIÓN*\n\n"
@@ -165,37 +176,39 @@ if os.path.exists(ARCHIVO_EXCEL):
                     st.info(f"Vista previa:\n{cuerpo_msg}")
                     c_wa, c_mail = st.columns(2)
                     
+                    # WhatsApp
                     txt_wa = urllib.parse.quote(cuerpo_msg)
-                    c_wa.link_button("📲 WhatsApp", f"https://api.whatsapp.com/send?text={txt_wa}")
+                    c_wa.link_button("📲 Enviar WhatsApp", f"https://api.whatsapp.com/send?text={txt_wa}")
                     
-                    asunto_encoded = urllib.parse.quote(f"Seguimiento: {total} Pendientes")
-                    body_encoded = urllib.parse.quote(cuerpo_msg)
-                    c_mail.link_button("📧 Correo", f"mailto:?subject={asunto_encoded}&body={body_encoded}")
+                    # Correo (Simplificado para evitar errores)
+                    asunto = urllib.parse.quote(f"Seguimiento: {total} Pendientes")
+                    body = urllib.parse.quote(cuerpo_msg)
+                    c_mail.link_button("📧 Enviar Correo", f"mailto:?subject={asunto}&body={body}")
 
                 st.divider()
 
-                # --- TABLA Y EDICIÓN ---
+                # --- TABLA EDITABLE ---
                 df_p.insert(0, "Seleccionar", False)
                 ed_p = st.data_editor(
                     df_p[['Seleccionar', 'Fecha_Prog'] + cols_view],
                     column_config={
                         "Seleccionar": st.column_config.CheckboxColumn(required=True),
                         "Fecha_Prog": st.column_config.DateColumn("📅 Programación", format="DD/MM/YYYY"),
-                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días", format="%d días") # Formato bonito
+                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días", format="%d días")
                     },
                     disabled=cols_view, hide_index=True, key="ed_p"
                 )
                 
                 seleccionados = ed_p[ed_p['Seleccionar'] == True]
                 
-                # Guardar Fecha
+                # BOTÓN 1: Guardar Fechas
                 if st.button("💾 Guardar Fechas"):
                     nuevas_fechas = pd.to_datetime(ed_p['Fecha_Prog'])
                     for id_u, fecha in zip(df_p['ID_Unico'], nuevas_fechas):
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = fecha
                     guardar_cambios(df_full)
 
-                # Mover
+                # BOTONES 2 y 3: Mover Items
                 if not seleccionados.empty:
                     st.write("---")
                     c1, c2 = st.columns(2)
@@ -226,6 +239,7 @@ if os.path.exists(ARCHIVO_EXCEL):
                     disabled=cols_view, hide_index=True, key="ed_r"
                 )
                 sel_r = ed_r[ed_r['Seleccionar'] == True]
+                
                 if not sel_r.empty:
                     st.write("---")
                     c1, c2 = st.columns(2)
@@ -255,6 +269,7 @@ if os.path.exists(ARCHIVO_EXCEL):
                     disabled=cols_view, hide_index=True, key="ed_c"
                 )
                 sel_c = ed_c[ed_c['Seleccionar'] == True]
+                
                 if not sel_c.empty:
                     st.write("---")
                     c1, c2 = st.columns(2)
