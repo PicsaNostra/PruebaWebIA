@@ -12,7 +12,7 @@ st.title("🛠️ Control de Repuestos - Gestión Total")
 # --- CONSTANTES Y ARCHIVOS ---
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
-REPO_NOMBRE = "TU_USUARIO/TU_REPO" # <--- ¡CAMBIA ESTO POR TU USUARIO/REPO!
+REPO_NOMBRE = "PicsaNostra/PruebaWebIA" # <--- ¡CAMBIA ESTO POR TU USUARIO/REPO!
 
 # --- FUNCIÓN CONEXIÓN GITHUB ---
 def subir_a_github(df_nuevo):
