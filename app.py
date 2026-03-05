@@ -19,7 +19,7 @@ def subir_a_github(df_nuevo):
     """Guarda el archivo CSV de gestión en la nube (GitHub)"""
     try:
         if "GITHUB_TOKEN" in st.secrets:
-            token = st.secrets["GITHUB_TOKEN"]
+            token = st.secrets["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"]
             g = Github(token)
             try:
                 repo = g.get_user().get_repo(REPO_NOMBRE.split("/")[-1]) 
