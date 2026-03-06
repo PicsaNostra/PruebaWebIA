@@ -3,58 +3,78 @@ import pandas as pd
 from datetime import datetime
 import io
 import urllib.parse
+import requests  # <--- NUEVA LIBRERÍA NECESARIA
 from github import Github
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Gestor Repuestos", layout="wide")
 
-# --- 2. CONSTANTES DE CONEXIÓN (LA CAJA FUERTE) ---
+# --- 2. CONSTANTES DE CONEXIÓN ---
 # Nombre EXACTO de tu repositorio privado (Usuario/Repositorio)
 REPO_DATOS = "PicsaNostra/DatosRepuestos" 
 
-# Nombres exactos de los archivos en la Caja Fuerte
+# Nombres de archivos
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
+RAMA = "main" # <--- Cambia a 'master' si tu repo es antiguo, pero suele ser 'main'
 
 # --- 3. FUNCIONES DE CONEXIÓN ---
 
-def obtener_repo_privado():
-    """Se conecta a GitHub y busca la Caja Fuerte"""
-    # Verificamos si existe el token en los secretos
+def obtener_token():
+    """Recupera y valida el token"""
     if "GITHUB_TOKEN" not in st.secrets:
-        st.error("❌ ERROR CRÍTICO: No has configurado el GITHUB_TOKEN en los Secrets de Streamlit.")
+        st.error("❌ Falta el Token en Secrets.")
         st.stop()
-    
-    token = st.secrets["GITHUB_TOKEN"]
+    return st.secrets["GITHUB_TOKEN"]
+
+def obtener_repo_privado():
+    """Conexión para guardar el CSV (archivos pequeños)"""
+    token = obtener_token()
     g = Github(token)
-    
     try:
-        # Intentamos conectar con el repositorio privado
         return g.get_repo(REPO_DATOS)
     except Exception as e:
-        st.error(f"❌ ERROR DE CONEXIÓN: No encuentro el repositorio '{REPO_DATOS}'.")
-        st.warning("POSIBLES CAUSAS:\n1. El nombre del repo está mal escrito.\n2. Tu Token no tiene marcado el permiso 'repo' (Full control of private repositories).")
-        st.stop()
+        st.error(f"❌ No encuentro el repositorio '{REPO_DATOS}': {e}")
         return None
 
 @st.cache_data(ttl=600)
 def cargar_excel_desde_nube():
-    """Descarga el Excel privado y lo convierte para Pandas"""
-    repo = obtener_repo_privado()
-    if not repo: return None
-
+    """
+    MÉTODO 'RAW' PARA ARCHIVOS GRANDES (>1MB)
+    Usa requests para descargar el binario directo.
+    """
+    token = obtener_token()
+    
+    # Construimos la URL del archivo crudo (Raw)
+    # Estructura: https://raw.githubusercontent.com/USUARIO/REPO/RAMA/ARCHIVO
+    url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
+    
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3.raw"
+    }
+    
     try:
-        # Descargamos el contenido del archivo
-        contenido = repo.get_contents(ARCHIVO_EXCEL).decoded_content
-        return pd.read_excel(io.BytesIO(contenido))
+        # Hacemos la petición directa
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            # Éxito: Leemos el contenido binario
+            return pd.read_excel(io.BytesIO(response.content), engine='openpyxl')
+        elif response.status_code == 404:
+            st.error(f"❌ Archivo no encontrado (404). Verifica que '{ARCHIVO_EXCEL}' esté en la rama '{RAMA}'.")
+            return None
+        else:
+            st.error(f"❌ Error descargando Excel: Código {response.status_code}")
+            return None
+            
     except Exception as e:
-        st.error(f"⚠️ No pude leer el archivo Excel '{ARCHIVO_EXCEL}': {e}")
+        st.error(f"⚠️ Error crítico descargando Excel: {e}")
         return None
 
 def cargar_csv_desde_nube():
-    """Descarga la memoria (CSV) del repositorio privado"""
+    """Descarga la memoria (CSV) usando el método estándar (es liviano)"""
     repo = obtener_repo_privado()
-    # Estructura vacía por defecto si falla la carga
     df_vacio = pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog'])
 
     if not repo: return df_vacio
@@ -63,40 +83,35 @@ def cargar_csv_desde_nube():
         contenido = repo.get_contents(ARCHIVO_CSV).decoded_content
         return pd.read_csv(io.BytesIO(contenido))
     except:
-        # Si entra aquí, es que el archivo CSV aún no existe (es la primera vez)
         return df_vacio
 
 def subir_a_github(df_nuevo):
-    """Guarda los cambios en la Caja Fuerte"""
+    """Guarda los cambios del CSV en la Caja Fuerte"""
     repo = obtener_repo_privado()
     if not repo: return
 
-    # Convertimos el DataFrame a CSV (texto)
     content_csv = df_nuevo.to_csv(index=False)
     
     try:
-        # Intentamos actualizar el archivo existente
         contents = repo.get_contents(ARCHIVO_CSV)
-        repo.update_file(contents.path, "Actualización desde App Pública", content_csv, contents.sha)
-        st.toast("✅ Datos guardados en la Caja Fuerte", icon="🔐")
+        repo.update_file(contents.path, "Actualización App", content_csv, contents.sha)
+        st.toast("✅ Guardado en Nube", icon="☁️")
     except:
-        # Si no existe, lo creamos de cero
         repo.create_file(ARCHIVO_CSV, "Creación Inicial", content_csv)
-        st.toast("✅ Archivo creado en la Caja Fuerte", icon="✨")
+        st.toast("✅ Archivo creado", icon="✨")
 
-# --- 4. LÓGICA PRINCIPAL Y UI ---
+# --- 4. LÓGICA PRINCIPAL ---
 
 st.title("🛠️ Control de Repuestos - Gestión")
 
 # Carga de datos
-with st.spinner('⏳ Conectando con la Caja Fuerte...'):
+with st.spinner('⏳ Descargando archivo grande (esto puede tardar unos segundos)...'):
     df = cargar_excel_desde_nube()
     df_memoria = cargar_csv_desde_nube()
 
 if df is not None:
     try:
-        # --- PROCESAMIENTO (TU LÓGICA DE NEGOCIO) ---
-        # Renombrar columnas clave
+        # --- PROCESAMIENTO ---
         col_insumo = df.columns[0]
         col_prod = df.columns[1]
         col_equipo = df.columns[6]
@@ -109,15 +124,12 @@ if df is not None:
             col_fecha: 'Fecha_Llegada'
         }, inplace=True)
 
-        # Limpieza de fechas
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
-        # Filtros automáticos (Excluir tornillos, etc.)
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", 
                    "CORAZA", "LLANTA", "PINTURA"]
         
-        # Aplicar filtros
         mask = (~df['Producto'].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
                (df.iloc[:, 4].astype(str).str.contains("Bogotá", case=False, na=False)) & \
                (~df['Cod Equipo'].astype(str).str.startswith('3')) & \
@@ -126,133 +138,105 @@ if df is not None:
                (df['Fecha_Llegada'].notna())
 
         df_base = df[mask].copy()
-        
-        # Crear ID Único para cruzar datos
         df_base['ID_Unico'] = df_base['Producto'].astype(str) + df_base['Cod Equipo'].astype(str)
         
-        # Calcular días
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
 
-        # Cruzar con la memoria (CSV)
+        # Cruzar con memoria
         if not df_memoria.empty:
             df_base['ID_Unico'] = df_base['ID_Unico'].astype(str)
             df_memoria['ID_Unico'] = df_memoria['ID_Unico'].astype(str)
             df_full = pd.merge(df_base, df_memoria, on='ID_Unico', how='left')
         else:
             df_full = df_base.copy()
-            df_full['Estado'] = 'PENDIENTE' # Valor por defecto
+            df_full['Estado'] = 'PENDIENTE'
             df_full['Fecha_Prog'] = None
 
-        # Rellenar vacíos
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # --- FUNCIÓN INTERNA PARA GUARDAR ---
-        def guardar_cambios_global(df_maestro):
-            datos_a_guardar = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
-            subir_a_github(datos_a_guardar)
+        # Función Guardar Global
+        def guardar_todo(df_maestro):
+            datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
+            subir_a_github(datos)
             st.cache_data.clear()
             st.rerun()
 
-        # --- INTERFAZ VISUAL ---
+        # --- INTERFAZ ---
         st.sidebar.header("🔍 Filtros")
         lista_prod = sorted(df_full['Producto'].astype(str).unique())
-        filtro_prod = st.sidebar.multiselect("Filtrar por Producto:", lista_prod)
+        filtro_prod = st.sidebar.multiselect("Producto:", lista_prod)
         
         df_view = df_full.copy()
-        if filtro_prod:
-            df_view = df_view[df_view['Producto'].astype(str).isin(filtro_prod)]
+        if filtro_prod: df_view = df_view[df_view['Producto'].astype(str).isin(filtro_prod)]
 
-        # Pestañas
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
-        cols_visuales = ['Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
+        cols_vis = ['Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
-        # === PESTAÑA 1: PENDIENTES ===
+        # TAB 1
         with tab1:
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
-            
             if df_p.empty:
-                st.success("✅ ¡No hay pendientes!")
+                st.success("✅ Todo limpio")
             else:
-                # Botón WhatsApp
-                with st.expander("📲 Enviar Reporte WhatsApp"):
-                    total = len(df_p)
-                    mensaje = f"⚠️ Reporte: Hay {total} repuestos pendientes en almacén."
-                    link_wa = f"https://api.whatsapp.com/send?text={urllib.parse.quote(mensaje)}"
-                    st.link_button("Enviar WhatsApp", link_wa)
+                with st.expander("📲 WhatsApp"):
+                    txt = urllib.parse.quote(f"⚠️ {len(df_p)} pendientes.")
+                    st.link_button("Enviar", f"https://api.whatsapp.com/send?text={txt}")
 
-                # Tabla editable
-                df_p.insert(0, "Seleccionar", False)
-                edited_p = st.data_editor(
-                    df_p[['Seleccionar', 'Fecha_Prog'] + cols_visuales],
+                df_p.insert(0, "Sel", False)
+                ed_p = st.data_editor(
+                    df_p[['Sel', 'Fecha_Prog'] + cols_vis],
                     column_config={
-                        "Seleccionar": st.column_config.CheckboxColumn(required=True),
-                        "Fecha_Prog": st.column_config.DateColumn("📅 Programación", format="DD/MM/YYYY"),
+                        "Sel": st.column_config.CheckboxColumn(width="small"),
+                        "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
                         "Días en Almacén": st.column_config.NumberColumn("⏳ Días")
                     },
-                    disabled=cols_visuales,
-                    hide_index=True,
-                    key="editor_pendientes"
+                    disabled=cols_vis, hide_index=True, key="ed_p"
                 )
 
-                # Botón de Guardar Fechas
-                if st.button("💾 Guardar Cambios (Fechas)", key="btn_save_p"):
-                    # Actualizar fechas en el maestro
-                    for idx, row in edited_p.iterrows():
-                        id_u = df_p.iloc[idx]['ID_Unico'] # Recuperar ID original
-                        nueva_fecha = row['Fecha_Prog']
-                        df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = nueva_fecha
-                    guardar_cambios_global(df_full)
+                if st.button("💾 Guardar Fechas"):
+                    for idx, row in ed_p.iterrows():
+                        id_u = df_p.iloc[idx]['ID_Unico']
+                        df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = row['Fecha_Prog']
+                    guardar_todo(df_full)
 
-                # Acciones de Movimiento
-                seleccionados = edited_p[edited_p['Seleccionar'] == True]
-                if not seleccionados.empty:
+                sel = ed_p[ed_p['Sel'] == True]
+                if not sel.empty:
                     st.divider()
-                    st.write("Con los seleccionados:")
-                    col1, col2 = st.columns(2)
-                    
-                    # Recuperar IDs reales de los seleccionados
-                    # Usamos el índice del editor para buscar en el dataframe original filtrado
-                    ids_seleccionados = df_p.iloc[seleccionados.index]['ID_Unico'].values
+                    c1, c2 = st.columns(2)
+                    ids = df_p.iloc[sel.index]['ID_Unico'].values
+                    if c1.button("✅ A Completado"):
+                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
+                        guardar_todo(df_full)
+                    if c2.button("🛡️ A Reserva"):
+                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
+                        guardar_todo(df_full)
 
-                    if col1.button("✅ Mover a COMPLETADO"):
-                        df_full.loc[df_full['ID_Unico'].isin(ids_seleccionados), 'Estado'] = 'COMPLETADO'
-                        guardar_cambios_global(df_full)
-                    
-                    if col2.button("🛡️ Mover a RESERVA"):
-                        df_full.loc[df_full['ID_Unico'].isin(ids_seleccionados), 'Estado'] = 'RESERVA'
-                        guardar_cambios_global(df_full)
-
-        # === PESTAÑA 2: RESERVA ===
+        # TAB 2
         with tab2:
             df_r = df_view[df_view['Estado'] == 'RESERVA'].copy()
             if df_r.empty:
-                st.info("No hay repuestos en reserva.")
+                st.info("Vacío")
             else:
-                df_r.insert(0, "Seleccionar", False)
-                edited_r = st.data_editor(
-                    df_r[['Seleccionar'] + cols_visuales],
-                    column_config={"Seleccionar": st.column_config.CheckboxColumn(required=True)},
-                    disabled=cols_visuales, hide_index=True, key="editor_reserva"
+                df_r.insert(0, "Sel", False)
+                ed_r = st.data_editor(
+                    df_r[['Sel'] + cols_vis],
+                    column_config={"Sel": st.column_config.CheckboxColumn(width="small")},
+                    disabled=cols_vis, hide_index=True, key="ed_r"
                 )
-                
-                sel_r = edited_r[edited_r['Seleccionar'] == True]
-                if not sel_r.empty:
-                    st.divider()
-                    ids_sel_r = df_r.iloc[sel_r.index]['ID_Unico'].values
-                    if st.button("🔙 Devolver a PENDIENTE"):
-                        df_full.loc[df_full['ID_Unico'].isin(ids_sel_r), 'Estado'] = 'PENDIENTE'
-                        guardar_cambios_global(df_full)
+                sel_r = ed_r[ed_r['Sel'] == True]
+                if not sel_r.empty and st.button("🔙 Devolver a Pendiente"):
+                    ids = df_r.iloc[sel_r.index]['ID_Unico'].values
+                    df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
+                    guardar_todo(df_full)
 
-        # === PESTAÑA 3: COMPLETADOS ===
+        # TAB 3
         with tab3:
-            df_c = df_view[df_view['Estado'] == 'COMPLETADO'].copy()
-            st.dataframe(df_c[cols_visuales], hide_index=True)
+            st.dataframe(df_view[df_view['Estado'] == 'COMPLETADO'][cols_vis], hide_index=True)
 
     except Exception as e:
-        st.error(f"❌ Ocurrió un error al procesar los datos: {e}")
-        st.write("Detalles técnicos para soporte:", e)
+        st.error(f"❌ Error procesando datos: {e}")
 
 else:
-    st.warning("⚠️ No se pudieron cargar los datos. Revisa la conexión con GitHub.")
+    st.warning("⚠️ No se cargaron datos.")
