@@ -98,10 +98,12 @@ if df is not None:
         df.rename(columns={col_insumo: 'Cód insumo', col_prod: 'Producto', col_equipo: 'Cod Equipo', col_fecha: 'Fecha_Llegada'}, inplace=True)
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
-        # Limpieza de espacios en blanco para asegurar coincidencias exactas
-        df['Producto'] = df['Producto'].astype(str).str.strip()
-        df['Cod Equipo'] = df['Cod Equipo'].astype(str).str.strip()
+        # --- LIMPIEZA AGRESIVA DE TEXTO (Para arreglar el filtro) ---
+        # Convertimos todo a Texto -> Quitamos espacios inicio/fin -> Todo a Mayúsculas
+        df['Producto'] = df['Producto'].astype(str).str.strip().str.upper()
+        df['Cod Equipo'] = df['Cod Equipo'].astype(str).str.strip().str.upper()
 
+        # Filtros de exclusión (Ahora en mayúsculas también para coincidir)
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", 
                    "CORAZA", "LLANTA", "PINTURA"]
@@ -114,6 +116,8 @@ if df is not None:
                (df['Fecha_Llegada'].notna())
 
         df_base = df[mask].copy()
+        
+        # ID Único limpio
         df_base['ID_Unico'] = df_base['Producto'] + df_base['Cod Equipo']
         
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
@@ -143,36 +147,36 @@ if df is not None:
             st.cache_data.clear()
             st.rerun()
 
-        # --- BARRA LATERAL (Descarga y Filtros) ---
+        # --- BARRA LATERAL (Filtros Blindados) ---
         st.sidebar.header("🎛️ Panel de Control")
         
         csv_data = df_full.to_csv(index=False).encode('utf-8-sig') 
         st.sidebar.download_button(
-            label="📥 Descargar Reporte Completo (CSV)",
+            label="📥 Descargar Reporte (CSV)",
             data=csv_data,
             file_name=f"Reporte_Repuestos_{datetime.now().strftime('%Y-%m-%d')}.csv",
             mime="text/csv"
         )
         
         st.sidebar.divider()
-        st.sidebar.subheader("🔍 Filtros de Búsqueda")
+        st.sidebar.subheader("🔍 Filtros Estrictos")
         
-        # --- FILTRO 1: PRODUCTO ---
+        # --- FILTRO 1: PRODUCTO (Ordenado y único) ---
+        # Como ya limpiamos arriba, aquí la lista será perfecta
         lista_prod = sorted(df_full['Producto'].unique())
         filtro_prod = st.sidebar.multiselect("Filtrar por Producto:", lista_prod)
         
-        # --- FILTRO 2: EQUIPO (NUEVO) ---
+        # --- FILTRO 2: EQUIPO ---
         lista_equipos = sorted(df_full['Cod Equipo'].unique())
         filtro_equipo = st.sidebar.multiselect("Filtrar por Equipo:", lista_equipos)
         
-        # --- LÓGICA DE FILTRADO EXACTO ---
+        # --- APLICACIÓN DE FILTROS ---
         df_view = df_full.copy()
         
-        # Aplicar filtro de Producto si existe
         if filtro_prod: 
+            # El .isin() busca coincidencia EXACTA en la lista seleccionada
             df_view = df_view[df_view['Producto'].isin(filtro_prod)]
             
-        # Aplicar filtro de Equipo si existe
         if filtro_equipo:
             df_view = df_view[df_view['Cod Equipo'].isin(filtro_equipo)]
 
