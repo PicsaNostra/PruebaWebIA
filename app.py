@@ -86,7 +86,6 @@ with st.spinner('⏳ Sincronizando datos...'):
     df_memoria = cargar_csv_desde_nube()
 
 if df is not None:
-    # --- MENSAJE DE ÉXITO ---
     st.success("✅ Sistema Sincronizado", icon="📡")
 
     try:
@@ -99,19 +98,23 @@ if df is not None:
         df.rename(columns={col_insumo: 'Cód insumo', col_prod: 'Producto', col_equipo: 'Cod Equipo', col_fecha: 'Fecha_Llegada'}, inplace=True)
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
+        # Limpieza de espacios en blanco para asegurar coincidencias exactas
+        df['Producto'] = df['Producto'].astype(str).str.strip()
+        df['Cod Equipo'] = df['Cod Equipo'].astype(str).str.strip()
+
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", 
                    "CORAZA", "LLANTA", "PINTURA"]
         
-        mask = (~df['Producto'].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
+        mask = (~df['Producto'].str.contains('|'.join(excluir), case=False, na=False)) & \
                (df.iloc[:, 4].astype(str).str.contains("Bogotá", case=False, na=False)) & \
-               (~df['Cod Equipo'].astype(str).str.startswith('3')) & \
-               (df['Cod Equipo'].astype(str) != "A.C.PM") & \
+               (~df['Cod Equipo'].str.startswith('3')) & \
+               (df['Cod Equipo'] != "A.C.PM") & \
                (pd.to_numeric(df.iloc[:, 11], errors='coerce') > 0) & \
                (df['Fecha_Llegada'].notna())
 
         df_base = df[mask].copy()
-        df_base['ID_Unico'] = df_base['Producto'].astype(str) + df_base['Cod Equipo'].astype(str)
+        df_base['ID_Unico'] = df_base['Producto'] + df_base['Cod Equipo']
         
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
@@ -129,8 +132,6 @@ if df is not None:
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # --- MEJORA: Semáforo de Urgencia ---
-        # Creamos una columna visual para el editor
         def calcular_semaforo(dias):
             return "🔴 Crítico" if dias > 30 else "🟢 Normal"
         
@@ -145,8 +146,7 @@ if df is not None:
         # --- BARRA LATERAL (Descarga y Filtros) ---
         st.sidebar.header("🎛️ Panel de Control")
         
-        # MEJORA: Botón de Descarga
-        csv_data = df_full.to_csv(index=False).encode('utf-8-sig') # utf-8-sig para que Excel lea tildes
+        csv_data = df_full.to_csv(index=False).encode('utf-8-sig') 
         st.sidebar.download_button(
             label="📥 Descargar Reporte Completo (CSV)",
             data=csv_data,
@@ -155,14 +155,28 @@ if df is not None:
         )
         
         st.sidebar.divider()
-        st.sidebar.subheader("🔍 Filtros")
-        lista_prod = sorted(df_full['Producto'].astype(str).unique())
-        filtro_prod = st.sidebar.multiselect("Producto:", lista_prod)
+        st.sidebar.subheader("🔍 Filtros de Búsqueda")
         
+        # --- FILTRO 1: PRODUCTO ---
+        lista_prod = sorted(df_full['Producto'].unique())
+        filtro_prod = st.sidebar.multiselect("Filtrar por Producto:", lista_prod)
+        
+        # --- FILTRO 2: EQUIPO (NUEVO) ---
+        lista_equipos = sorted(df_full['Cod Equipo'].unique())
+        filtro_equipo = st.sidebar.multiselect("Filtrar por Equipo:", lista_equipos)
+        
+        # --- LÓGICA DE FILTRADO EXACTO ---
         df_view = df_full.copy()
-        if filtro_prod: df_view = df_view[df_view['Producto'].astype(str).isin(filtro_prod)]
+        
+        # Aplicar filtro de Producto si existe
+        if filtro_prod: 
+            df_view = df_view[df_view['Producto'].isin(filtro_prod)]
+            
+        # Aplicar filtro de Equipo si existe
+        if filtro_equipo:
+            df_view = df_view[df_view['Cod Equipo'].isin(filtro_equipo)]
 
-        # --- MEJORA: TABLERO DE MÉTRICAS (KPIs) ---
+        # --- TABLERO DE MÉTRICAS (KPIs) ---
         col1, col2, col3 = st.columns(3)
         col1.metric("🚨 Pendientes", len(df_view[df_view['Estado'] == 'PENDIENTE']), delta="Acción requerida", delta_color="inverse")
         col2.metric("🛡️ En Reserva", len(df_view[df_view['Estado'] == 'RESERVA']))
@@ -173,7 +187,6 @@ if df is not None:
         # Pestañas
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
         
-        # Columnas a mostrar (Añadimos Prioridad)
         cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
         # === PENDIENTES ===
@@ -181,12 +194,11 @@ if df is not None:
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
             
             if df_p.empty:
-                st.info("✨ ¡Excelente! No hay pendientes.")
+                st.info("✨ No hay datos que coincidan con tu búsqueda.")
             else:
                 with st.expander("📲 Enviar Notificación WhatsApp"):
-                    # Calculamos cuántos son críticos
                     criticos = len(df_p[df_p['Prioridad'] == "🔴 Crítico"])
-                    txt = urllib.parse.quote(f"⚠️ Reporte Almacén: {len(df_p)} pendientes ({criticos} críticos con >30 días).")
+                    txt = urllib.parse.quote(f"⚠️ Reporte Almacén: {len(df_p)} pendientes ({criticos} críticos).")
                     st.link_button("Enviar WhatsApp", f"https://api.whatsapp.com/send?text={txt}")
 
                 df_p.insert(0, "Sel", False)
@@ -194,7 +206,7 @@ if df is not None:
                     df_p[['Sel', 'Fecha_Prog'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
-                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"), # Semáforo
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
                         "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
                         "Días en Almacén": st.column_config.NumberColumn("⏳ Días"),
                         "Cod Equipo": st.column_config.TextColumn("Equipo")
@@ -225,7 +237,7 @@ if df is not None:
         with tab2:
             df_r = df_view[df_view['Estado'] == 'RESERVA'].copy()
             if df_r.empty:
-                st.info("El área de reserva está vacía.")
+                st.info("Sin coincidencias en Reserva.")
             else:
                 df_r.insert(0, "Sel", False)
                 ed_r = st.data_editor(
@@ -244,11 +256,11 @@ if df is not None:
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
                         guardar_todo(df_full)
 
-        # === COMPLETADOS (EDITABLE) ===
+        # === COMPLETADOS ===
         with tab3:
             df_c = df_view[df_view['Estado'] == 'COMPLETADO'].copy()
             if df_c.empty:
-                st.info("Aún no hay completados.")
+                st.info("Sin coincidencias en Completados.")
             else:
                 df_c.insert(0, "Sel", False)
                 ed_c = st.data_editor(
