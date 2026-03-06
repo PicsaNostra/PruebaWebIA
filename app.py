@@ -78,7 +78,7 @@ def subir_a_github(df_nuevo):
 
 # --- 4. LÓGICA PRINCIPAL ---
 
-st.title("🛠️ Control de Repuestos - Gestión Inteligente")
+st.title("🛠️ Control de Repuestos - Buscador Inteligente")
 
 # Carga de datos
 with st.spinner('⏳ Sincronizando datos...'):
@@ -98,12 +98,11 @@ if df is not None:
         df.rename(columns={col_insumo: 'Cód insumo', col_prod: 'Producto', col_equipo: 'Cod Equipo', col_fecha: 'Fecha_Llegada'}, inplace=True)
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
-        # --- LIMPIEZA AGRESIVA DE TEXTO (Para arreglar el filtro) ---
-        # Convertimos todo a Texto -> Quitamos espacios inicio/fin -> Todo a Mayúsculas
+        # Limpieza de datos (Convertimos todo a string para evitar errores de búsqueda)
+        df['Cód insumo'] = df['Cód insumo'].astype(str).str.strip().str.upper()
         df['Producto'] = df['Producto'].astype(str).str.strip().str.upper()
         df['Cod Equipo'] = df['Cod Equipo'].astype(str).str.strip().str.upper()
 
-        # Filtros de exclusión (Ahora en mayúsculas también para coincidir)
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", 
                    "CORAZA", "LLANTA", "PINTURA"]
@@ -117,8 +116,11 @@ if df is not None:
 
         df_base = df[mask].copy()
         
-        # ID Único limpio
+        # ID Único
         df_base['ID_Unico'] = df_base['Producto'] + df_base['Cod Equipo']
+        
+        # Columna Maestra de Búsqueda (Une todo el texto en una sola columna invisible)
+        df_base['BUSQUEDA_TOTAL'] = df_base['Cód insumo'] + " " + df_base['Producto'] + " " + df_base['Cod Equipo']
         
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
@@ -147,7 +149,7 @@ if df is not None:
             st.cache_data.clear()
             st.rerun()
 
-        # --- BARRA LATERAL (Filtros Blindados) ---
+        # --- BARRA LATERAL (Panel) ---
         st.sidebar.header("🎛️ Panel de Control")
         
         csv_data = df_full.to_csv(index=False).encode('utf-8-sig') 
@@ -159,28 +161,20 @@ if df is not None:
         )
         
         st.sidebar.divider()
-        st.sidebar.subheader("🔍 Filtros Estrictos")
+        st.sidebar.subheader("🔍 Buscador General")
+        st.sidebar.info("Escribe el Código, Nombre del repuesto o Equipo.")
         
-        # --- FILTRO 1: PRODUCTO (Ordenado y único) ---
-        # Como ya limpiamos arriba, aquí la lista será perfecta
-        lista_prod = sorted(df_full['Producto'].unique())
-        filtro_prod = st.sidebar.multiselect("Filtrar por Producto:", lista_prod)
+        # --- EL BUSCADOR TIPO GOOGLE ---
+        texto_busqueda = st.sidebar.text_input("Escribe aquí...", placeholder="Ej: 1661 o Cuchilla").upper().strip()
         
-        # --- FILTRO 2: EQUIPO ---
-        lista_equipos = sorted(df_full['Cod Equipo'].unique())
-        filtro_equipo = st.sidebar.multiselect("Filtrar por Equipo:", lista_equipos)
-        
-        # --- APLICACIÓN DE FILTROS ---
         df_view = df_full.copy()
         
-        if filtro_prod: 
-            # El .isin() busca coincidencia EXACTA en la lista seleccionada
-            df_view = df_view[df_view['Producto'].isin(filtro_prod)]
-            
-        if filtro_equipo:
-            df_view = df_view[df_view['Cod Equipo'].isin(filtro_equipo)]
+        # Lógica de Filtrado Inteligente
+        if texto_busqueda:
+            # Busca si el texto escrito está DENTRO de la columna maestra
+            df_view = df_view[df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False)]
 
-        # --- TABLERO DE MÉTRICAS (KPIs) ---
+        # --- TABLERO DE MÉTRICAS ---
         col1, col2, col3 = st.columns(3)
         col1.metric("🚨 Pendientes", len(df_view[df_view['Estado'] == 'PENDIENTE']), delta="Acción requerida", delta_color="inverse")
         col2.metric("🛡️ En Reserva", len(df_view[df_view['Estado'] == 'RESERVA']))
@@ -191,6 +185,7 @@ if df is not None:
         # Pestañas
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
         
+        # Columnas a mostrar (Quitamos ID_Unico y Busqueda para que se vea limpio)
         cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
         # === PENDIENTES ===
@@ -198,12 +193,15 @@ if df is not None:
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
             
             if df_p.empty:
-                st.info("✨ No hay datos que coincidan con tu búsqueda.")
+                if texto_busqueda:
+                    st.warning(f"🔍 No encontré nada con '{texto_busqueda}' en Pendientes.")
+                else:
+                    st.info("✨ Todo limpio.")
             else:
-                with st.expander("📲 Enviar Notificación WhatsApp"):
+                with st.expander("📲 Opciones de WhatsApp"):
                     criticos = len(df_p[df_p['Prioridad'] == "🔴 Crítico"])
                     txt = urllib.parse.quote(f"⚠️ Reporte Almacén: {len(df_p)} pendientes ({criticos} críticos).")
-                    st.link_button("Enviar WhatsApp", f"https://api.whatsapp.com/send?text={txt}")
+                    st.link_button("Enviar Reporte General", f"https://api.whatsapp.com/send?text={txt}")
 
                 df_p.insert(0, "Sel", False)
                 ed_p = st.data_editor(
@@ -213,7 +211,8 @@ if df is not None:
                         "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
                         "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
                         "Días en Almacén": st.column_config.NumberColumn("⏳ Días"),
-                        "Cod Equipo": st.column_config.TextColumn("Equipo")
+                        "Cod Equipo": st.column_config.TextColumn("Equipo"),
+                        "Cód insumo": st.column_config.TextColumn("Código")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_p"
                 )
