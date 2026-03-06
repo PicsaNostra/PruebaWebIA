@@ -3,80 +3,58 @@ import pandas as pd
 from datetime import datetime
 import io
 import urllib.parse
-import requests  # <--- NUEVA LIBRERÍA NECESARIA
+import requests
 from github import Github
 
 # --- 1. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Gestor Repuestos", layout="wide")
+st.set_page_config(page_title="Gestor Repuestos Pro", layout="wide", page_icon="🛠️")
 
 # --- 2. CONSTANTES DE CONEXIÓN ---
-# Nombre EXACTO de tu repositorio privado (Usuario/Repositorio)
 REPO_DATOS = "PicsaNostra/DatosRepuestos" 
-
-# Nombres de archivos
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
-RAMA = "main" # <--- Cambia a 'master' si tu repo es antiguo, pero suele ser 'main'
+RAMA = "main"
 
 # --- 3. FUNCIONES DE CONEXIÓN ---
 
 def obtener_token():
-    """Recupera y valida el token"""
     if "GITHUB_TOKEN" not in st.secrets:
         st.error("❌ Falta el Token en Secrets.")
         st.stop()
     return st.secrets["GITHUB_TOKEN"]
 
 def obtener_repo_privado():
-    """Conexión para guardar el CSV (archivos pequeños)"""
     token = obtener_token()
     g = Github(token)
     try:
         return g.get_repo(REPO_DATOS)
     except Exception as e:
-        st.error(f"❌ No encuentro el repositorio '{REPO_DATOS}': {e}")
+        st.error(f"❌ Error conectando al repo: {e}")
         return None
 
 @st.cache_data(ttl=600)
 def cargar_excel_desde_nube():
-    """
-    MÉTODO 'RAW' PARA ARCHIVOS GRANDES (>1MB)
-    Usa requests para descargar el binario directo.
-    """
     token = obtener_token()
-    
-    # Construimos la URL del archivo crudo (Raw)
-    # Estructura: https://raw.githubusercontent.com/USUARIO/REPO/RAMA/ARCHIVO
     url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
-    
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3.raw"
-    }
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3.raw"}
     
     try:
-        # Hacemos la petición directa
         response = requests.get(url, headers=headers)
-        
         if response.status_code == 200:
-            # Éxito: Leemos el contenido binario
             return pd.read_excel(io.BytesIO(response.content), engine='openpyxl')
         elif response.status_code == 404:
-            st.error(f"❌ Archivo no encontrado (404). Verifica que '{ARCHIVO_EXCEL}' esté en la rama '{RAMA}'.")
+            st.error(f"❌ No encontrado (404). Revisa nombre del repo o archivo.")
             return None
         else:
-            st.error(f"❌ Error descargando Excel: Código {response.status_code}")
+            st.error(f"❌ Error {response.status_code} descargando Excel.")
             return None
-            
     except Exception as e:
-        st.error(f"⚠️ Error crítico descargando Excel: {e}")
+        st.error(f"⚠️ Error crítico: {e}")
         return None
 
 def cargar_csv_desde_nube():
-    """Descarga la memoria (CSV) usando el método estándar (es liviano)"""
     repo = obtener_repo_privado()
     df_vacio = pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog'])
-
     if not repo: return df_vacio
 
     try:
@@ -86,12 +64,10 @@ def cargar_csv_desde_nube():
         return df_vacio
 
 def subir_a_github(df_nuevo):
-    """Guarda los cambios del CSV en la Caja Fuerte"""
     repo = obtener_repo_privado()
     if not repo: return
 
     content_csv = df_nuevo.to_csv(index=False)
-    
     try:
         contents = repo.get_contents(ARCHIVO_CSV)
         repo.update_file(contents.path, "Actualización App", content_csv, contents.sha)
@@ -102,28 +78,25 @@ def subir_a_github(df_nuevo):
 
 # --- 4. LÓGICA PRINCIPAL ---
 
-st.title("🛠️ Control de Repuestos - Gestión")
+st.title("🛠️ Control de Repuestos - Gestión Inteligente")
 
 # Carga de datos
-with st.spinner('⏳ Descargando archivo grande (esto puede tardar unos segundos)...'):
+with st.spinner('⏳ Sincronizando datos...'):
     df = cargar_excel_desde_nube()
     df_memoria = cargar_csv_desde_nube()
 
 if df is not None:
+    # --- MENSAJE DE ÉXITO ---
+    st.success("✅ Sistema Sincronizado", icon="📡")
+
     try:
-        # --- PROCESAMIENTO ---
+        # Procesamiento
         col_insumo = df.columns[0]
         col_prod = df.columns[1]
         col_equipo = df.columns[6]
         col_fecha = df.columns[17]
 
-        df.rename(columns={
-            col_insumo: 'Cód insumo',
-            col_prod: 'Producto',
-            col_equipo: 'Cod Equipo',
-            col_fecha: 'Fecha_Llegada'
-        }, inplace=True)
-
+        df.rename(columns={col_insumo: 'Cód insumo', col_prod: 'Producto', col_equipo: 'Cod Equipo', col_fecha: 'Fecha_Llegada'}, inplace=True)
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
@@ -143,7 +116,7 @@ if df is not None:
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
 
-        # Cruzar con memoria
+        # Cruzar datos
         if not df_memoria.empty:
             df_base['ID_Unico'] = df_base['ID_Unico'].astype(str)
             df_memoria['ID_Unico'] = df_memoria['ID_Unico'].astype(str)
@@ -156,46 +129,80 @@ if df is not None:
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # Función Guardar Global
+        # --- MEJORA: Semáforo de Urgencia ---
+        # Creamos una columna visual para el editor
+        def calcular_semaforo(dias):
+            return "🔴 Crítico" if dias > 30 else "🟢 Normal"
+        
+        df_full['Prioridad'] = df_full['Días en Almacén'].apply(calcular_semaforo)
+
         def guardar_todo(df_maestro):
             datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
             subir_a_github(datos)
             st.cache_data.clear()
             st.rerun()
 
-        # --- INTERFAZ ---
-        st.sidebar.header("🔍 Filtros")
+        # --- BARRA LATERAL (Descarga y Filtros) ---
+        st.sidebar.header("🎛️ Panel de Control")
+        
+        # MEJORA: Botón de Descarga
+        csv_data = df_full.to_csv(index=False).encode('utf-8-sig') # utf-8-sig para que Excel lea tildes
+        st.sidebar.download_button(
+            label="📥 Descargar Reporte Completo (CSV)",
+            data=csv_data,
+            file_name=f"Reporte_Repuestos_{datetime.now().strftime('%Y-%m-%d')}.csv",
+            mime="text/csv"
+        )
+        
+        st.sidebar.divider()
+        st.sidebar.subheader("🔍 Filtros")
         lista_prod = sorted(df_full['Producto'].astype(str).unique())
         filtro_prod = st.sidebar.multiselect("Producto:", lista_prod)
         
         df_view = df_full.copy()
         if filtro_prod: df_view = df_view[df_view['Producto'].astype(str).isin(filtro_prod)]
 
-        tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
-        cols_vis = ['Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
+        # --- MEJORA: TABLERO DE MÉTRICAS (KPIs) ---
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🚨 Pendientes", len(df_view[df_view['Estado'] == 'PENDIENTE']), delta="Acción requerida", delta_color="inverse")
+        col2.metric("🛡️ En Reserva", len(df_view[df_view['Estado'] == 'RESERVA']))
+        col3.metric("✅ Completados", len(df_view[df_view['Estado'] == 'COMPLETADO']))
+        
+        st.divider()
 
-        # TAB 1
+        # Pestañas
+        tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
+        
+        # Columnas a mostrar (Añadimos Prioridad)
+        cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
+
+        # === PENDIENTES ===
         with tab1:
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
+            
             if df_p.empty:
-                st.success("✅ Todo limpio")
+                st.info("✨ ¡Excelente! No hay pendientes.")
             else:
-                with st.expander("📲 WhatsApp"):
-                    txt = urllib.parse.quote(f"⚠️ {len(df_p)} pendientes.")
-                    st.link_button("Enviar", f"https://api.whatsapp.com/send?text={txt}")
+                with st.expander("📲 Enviar Notificación WhatsApp"):
+                    # Calculamos cuántos son críticos
+                    criticos = len(df_p[df_p['Prioridad'] == "🔴 Crítico"])
+                    txt = urllib.parse.quote(f"⚠️ Reporte Almacén: {len(df_p)} pendientes ({criticos} críticos con >30 días).")
+                    st.link_button("Enviar WhatsApp", f"https://api.whatsapp.com/send?text={txt}")
 
                 df_p.insert(0, "Sel", False)
                 ed_p = st.data_editor(
                     df_p[['Sel', 'Fecha_Prog'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"), # Semáforo
                         "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
-                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días")
+                        "Días en Almacén": st.column_config.NumberColumn("⏳ Días"),
+                        "Cod Equipo": st.column_config.TextColumn("Equipo")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_p"
                 )
 
-                if st.button("💾 Guardar Fechas"):
+                if st.button("💾 Guardar Fechas", type="primary"):
                     for idx, row in ed_p.iterrows():
                         id_u = df_p.iloc[idx]['ID_Unico']
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = row['Fecha_Prog']
@@ -204,39 +211,73 @@ if df is not None:
                 sel = ed_p[ed_p['Sel'] == True]
                 if not sel.empty:
                     st.divider()
+                    st.write(f"Has seleccionado **{len(sel)}** ítems:")
                     c1, c2 = st.columns(2)
                     ids = df_p.iloc[sel.index]['ID_Unico'].values
-                    if c1.button("✅ A Completado"):
+                    if c1.button("✅ Mover a COMPLETADO"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
                         guardar_todo(df_full)
-                    if c2.button("🛡️ A Reserva"):
+                    if c2.button("🛡️ Mover a RESERVA"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
                         guardar_todo(df_full)
 
-        # TAB 2
+        # === RESERVA ===
         with tab2:
             df_r = df_view[df_view['Estado'] == 'RESERVA'].copy()
             if df_r.empty:
-                st.info("Vacío")
+                st.info("El área de reserva está vacía.")
             else:
                 df_r.insert(0, "Sel", False)
                 ed_r = st.data_editor(
                     df_r[['Sel'] + cols_vis],
-                    column_config={"Sel": st.column_config.CheckboxColumn(width="small")},
+                    column_config={
+                        "Sel": st.column_config.CheckboxColumn(width="small"),
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
+                    },
                     disabled=cols_vis, hide_index=True, key="ed_r"
                 )
                 sel_r = ed_r[ed_r['Sel'] == True]
-                if not sel_r.empty and st.button("🔙 Devolver a Pendiente"):
-                    ids = df_r.iloc[sel_r.index]['ID_Unico'].values
-                    df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
-                    guardar_todo(df_full)
+                if not sel_r.empty:
+                    st.divider()
+                    if st.button("🔙 Devolver a PENDIENTE"):
+                        ids = df_r.iloc[sel_r.index]['ID_Unico'].values
+                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
+                        guardar_todo(df_full)
 
-        # TAB 3
+        # === COMPLETADOS (EDITABLE) ===
         with tab3:
-            st.dataframe(df_view[df_view['Estado'] == 'COMPLETADO'][cols_vis], hide_index=True)
+            df_c = df_view[df_view['Estado'] == 'COMPLETADO'].copy()
+            if df_c.empty:
+                st.info("Aún no hay completados.")
+            else:
+                df_c.insert(0, "Sel", False)
+                ed_c = st.data_editor(
+                    df_c[['Sel'] + cols_vis],
+                    column_config={
+                        "Sel": st.column_config.CheckboxColumn(width="small"),
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
+                    },
+                    disabled=cols_vis, 
+                    hide_index=True, 
+                    key="ed_c"
+                )
+
+                sel_c = ed_c[ed_c['Sel'] == True]
+                if not sel_c.empty:
+                    st.divider()
+                    st.warning("⚠️ Zona de Corrección")
+                    col1, col2 = st.columns(2)
+                    ids_c = df_c.iloc[sel_c.index]['ID_Unico'].values
+
+                    if col1.button("🔙 Devolver a PENDIENTE"):
+                        df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'
+                        guardar_todo(df_full)
+                    
+                    if col2.button("🛡️ Mover a RESERVA"):
+                        df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'RESERVA'
+                        guardar_todo(df_full)
 
     except Exception as e:
         st.error(f"❌ Error procesando datos: {e}")
-
 else:
     st.warning("⚠️ No se cargaron datos.")
