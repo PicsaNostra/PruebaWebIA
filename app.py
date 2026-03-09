@@ -33,31 +33,20 @@ def obtener_repo_privado():
         return None
 
 @st.cache_data(ttl=600)
-@st.cache_data(ttl=600)
 def cargar_excel_desde_nube():
     token = obtener_token()
-    # Construimos la URL
     url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
-    
-    # --- MODO DETECTIVE (Imprimirá esto en tu pantalla) ---
-    st.info(f"🔍 URL Generada: {url}")
-    st.write(f"🔑 Token detectado: {len(token)} caracteres (Primeros 4: {token[:4]}...)")
-    # -----------------------------------------------------
-
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3.raw"}
     
     try:
         response = requests.get(url, headers=headers)
-        
         if response.status_code == 200:
-            st.success("✅ ¡Conexión Exitosa!") # Si sale esto, funcionó
             return pd.read_excel(io.BytesIO(response.content), engine='openpyxl')
         elif response.status_code == 404:
-            st.error("❌ Error 404: GitHub dice que no existe.")
-            st.warning("POSIBLES CAUSAS:\n1. El Token no tiene permiso 'repo'.\n2. El archivo está dentro de una carpeta.\n3. El nombre del repo tiene mayúsculas/minúsculas distintas.")
+            st.error(f"❌ No encontrado (404). Revisa nombre del repo o archivo.")
             return None
         else:
-            st.error(f"❌ Error {response.status_code}: {response.text}")
+            st.error(f"❌ Error {response.status_code} descargando Excel.")
             return None
     except Exception as e:
         st.error(f"⚠️ Error crítico: {e}")
@@ -97,6 +86,7 @@ with st.spinner('⏳ Sincronizando datos...'):
     df_memoria = cargar_csv_desde_nube()
 
 if df is not None:
+    # --- MENSAJE DE ÉXITO ---
     st.success("✅ Sistema Sincronizado", icon="📡")
 
     try:
@@ -109,7 +99,7 @@ if df is not None:
         df.rename(columns={col_insumo: 'Cód insumo', col_prod: 'Producto', col_equipo: 'Cod Equipo', col_fecha: 'Fecha_Llegada'}, inplace=True)
         df['Fecha_Llegada'] = pd.to_datetime(df['Fecha_Llegada'], errors='coerce')
         
-        # Limpieza de datos (Convertimos todo a string para evitar errores de búsqueda)
+        # Limpieza de datos
         df['Cód insumo'] = df['Cód insumo'].astype(str).str.strip().str.upper()
         df['Producto'] = df['Producto'].astype(str).str.strip().str.upper()
         df['Cod Equipo'] = df['Cod Equipo'].astype(str).str.strip().str.upper()
@@ -130,7 +120,7 @@ if df is not None:
         # ID Único
         df_base['ID_Unico'] = df_base['Producto'] + df_base['Cod Equipo']
         
-        # Columna Maestra de Búsqueda (Une todo el texto en una sola columna invisible)
+        # Columna Maestra de Búsqueda
         df_base['BUSQUEDA_TOTAL'] = df_base['Cód insumo'] + " " + df_base['Producto'] + " " + df_base['Cod Equipo']
         
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
@@ -182,7 +172,6 @@ if df is not None:
         
         # Lógica de Filtrado Inteligente
         if texto_busqueda:
-            # Busca si el texto escrito está DENTRO de la columna maestra
             df_view = df_view[df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False)]
 
         # --- TABLERO DE MÉTRICAS ---
@@ -196,7 +185,6 @@ if df is not None:
         # Pestañas
         tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
         
-        # Columnas a mostrar (Quitamos ID_Unico y Busqueda para que se vea limpio)
         cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
         # === PENDIENTES ===
@@ -283,9 +271,7 @@ if df is not None:
                         "Sel": st.column_config.CheckboxColumn(width="small"),
                         "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
                     },
-                    disabled=cols_vis, 
-                    hide_index=True, 
-                    key="ed_c"
+                    disabled=cols_vis, hide_index=True, key="ed_c"
                 )
 
                 sel_c = ed_c[ed_c['Sel'] == True]
