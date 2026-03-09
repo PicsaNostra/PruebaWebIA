@@ -216,9 +216,8 @@ if df is not None:
                     disabled=cols_vis, hide_index=True, key="ed_p"
                 )
 
-                if st.button("💾 Guardar Fechas", type="primary"):
+                if st.button("💾 Guardar Fechas", type="primary", key="btn_save_dates"):
                     for idx, row in ed_p.iterrows():
-                        # CORRECCION: Usamos .loc con el índice original, no posición
                         idx_real = idx 
                         id_u = df_p.loc[idx_real]['ID_Unico']
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = row['Fecha_Prog']
@@ -230,13 +229,12 @@ if df is not None:
                     st.write(f"Has seleccionado **{len(sel)}** ítems:")
                     c1, c2 = st.columns(2)
                     
-                    # CORRECCION: Usamos .loc para asegurar indices correctos
                     ids = df_p.loc[sel.index, 'ID_Unico'].values
                     
-                    if c1.button("✅ Mover a COMPLETADO"):
+                    if c1.button("✅ Mover a COMPLETADO", key="btn_p_to_c"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
                         guardar_todo(df_full)
-                    if c2.button("🛡️ Mover a RESERVA"):
+                    if c2.button("🛡️ Mover a RESERVA", key="btn_p_to_r"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
                         guardar_todo(df_full)
 
@@ -258,8 +256,7 @@ if df is not None:
                 sel_r = ed_r[ed_r['Sel'] == True]
                 if not sel_r.empty:
                     st.divider()
-                    if st.button("🔙 Devolver a PENDIENTE"):
-                        # CORRECCION: Usamos .loc
+                    if st.button("🔙 Devolver a PENDIENTE", key="btn_r_to_p"):
                         ids = df_r.loc[sel_r.index, 'ID_Unico'].values
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
                         guardar_todo(df_full)
@@ -286,20 +283,18 @@ if df is not None:
                     st.warning("⚠️ Zona de Corrección")
                     col1, col2 = st.columns(2)
                     
-                    # CORRECCION: Usamos .loc para evitar error index out of bounds
                     ids_c = df_c.loc[sel_c.index, 'ID_Unico'].values
 
-                    if col1.button("🔙 Devolver a PENDIENTE"):
+                    if col1.button("🔙 Devolver a PENDIENTE", key="btn_c_to_p"):
                         df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'
                         guardar_todo(df_full)
                     
-                    if col2.button("🛡️ Mover a RESERVA"):
+                    if col2.button("🛡️ Mover a RESERVA", key="btn_c_to_r"):
                         df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'RESERVA'
                         guardar_todo(df_full)
 
     except Exception as e:
         st.error(f"❌ Error procesando datos: {e}")
-        # Muestra detalle técnico para depurar si vuelve a pasar
         st.write(e)
 else:
     st.warning("⚠️ No se cargaron datos.")
