@@ -218,7 +218,9 @@ if df is not None:
 
                 if st.button("💾 Guardar Fechas", type="primary"):
                     for idx, row in ed_p.iterrows():
-                        id_u = df_p.iloc[idx]['ID_Unico']
+                        # CORRECCION: Usamos .loc con el índice original, no posición
+                        idx_real = idx 
+                        id_u = df_p.loc[idx_real]['ID_Unico']
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = row['Fecha_Prog']
                     guardar_todo(df_full)
 
@@ -227,7 +229,10 @@ if df is not None:
                     st.divider()
                     st.write(f"Has seleccionado **{len(sel)}** ítems:")
                     c1, c2 = st.columns(2)
-                    ids = df_p.iloc[sel.index]['ID_Unico'].values
+                    
+                    # CORRECCION: Usamos .loc para asegurar indices correctos
+                    ids = df_p.loc[sel.index, 'ID_Unico'].values
+                    
                     if c1.button("✅ Mover a COMPLETADO"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
                         guardar_todo(df_full)
@@ -254,7 +259,8 @@ if df is not None:
                 if not sel_r.empty:
                     st.divider()
                     if st.button("🔙 Devolver a PENDIENTE"):
-                        ids = df_r.iloc[sel_r.index]['ID_Unico'].values
+                        # CORRECCION: Usamos .loc
+                        ids = df_r.loc[sel_r.index, 'ID_Unico'].values
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'PENDIENTE'
                         guardar_todo(df_full)
 
@@ -279,7 +285,9 @@ if df is not None:
                     st.divider()
                     st.warning("⚠️ Zona de Corrección")
                     col1, col2 = st.columns(2)
-                    ids_c = df_c.iloc[sel_c.index]['ID_Unico'].values
+                    
+                    # CORRECCION: Usamos .loc para evitar error index out of bounds
+                    ids_c = df_c.loc[sel_c.index, 'ID_Unico'].values
 
                     if col1.button("🔙 Devolver a PENDIENTE"):
                         df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'
@@ -291,5 +299,7 @@ if df is not None:
 
     except Exception as e:
         st.error(f"❌ Error procesando datos: {e}")
+        # Muestra detalle técnico para depurar si vuelve a pasar
+        st.write(e)
 else:
     st.warning("⚠️ No se cargaron datos.")
