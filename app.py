@@ -33,20 +33,31 @@ def obtener_repo_privado():
         return None
 
 @st.cache_data(ttl=600)
+@st.cache_data(ttl=600)
 def cargar_excel_desde_nube():
     token = obtener_token()
+    # Construimos la URL
     url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
+    
+    # --- MODO DETECTIVE (Imprimirá esto en tu pantalla) ---
+    st.info(f"🔍 URL Generada: {url}")
+    st.write(f"🔑 Token detectado: {len(token)} caracteres (Primeros 4: {token[:4]}...)")
+    # -----------------------------------------------------
+
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3.raw"}
     
     try:
         response = requests.get(url, headers=headers)
+        
         if response.status_code == 200:
+            st.success("✅ ¡Conexión Exitosa!") # Si sale esto, funcionó
             return pd.read_excel(io.BytesIO(response.content), engine='openpyxl')
         elif response.status_code == 404:
-            st.error(f"❌ No encontrado (404). Revisa nombre del repo o archivo.")
+            st.error("❌ Error 404: GitHub dice que no existe.")
+            st.warning("POSIBLES CAUSAS:\n1. El Token no tiene permiso 'repo'.\n2. El archivo está dentro de una carpeta.\n3. El nombre del repo tiene mayúsculas/minúsculas distintas.")
             return None
         else:
-            st.error(f"❌ Error {response.status_code} descargando Excel.")
+            st.error(f"❌ Error {response.status_code}: {response.text}")
             return None
     except Exception as e:
         st.error(f"⚠️ Error crítico: {e}")
