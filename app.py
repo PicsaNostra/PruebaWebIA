@@ -15,7 +15,6 @@ ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_CSV = "datos_gestion.csv"
 RAMA = "main"
 
-# Enlace modificado para exportación directa CSV
 URL_FALLAS = "https://docs.google.com/spreadsheets/d/1o22GZKmqCmuABGaR1nyLe2jCMBti7cWJtv38wvgH0PQ/export?format=csv&gid=0"
 
 # --- 3. FUNCIONES DE CONEXIÓN ---
@@ -60,42 +59,31 @@ def cargar_csv_desde_nube():
     except:
         return df_vacio
 
-@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
+@st.cache_data(ttl=300)
 def cargar_fallas_espejo():
-    """Descarga, filtra y prepara las fallas desde el Google Sheet"""
-    df_vacio = pd.DataFrame(columns=['Cod Equipo', 'Falla'])
+    """Descarga las fallas del Google Sheet de forma 100% independiente"""
+    df_vacio = pd.DataFrame(columns=['Cod Equipo', 'Estado Falla', 'Falla'])
     
     try:
-        # Descargamos el archivo directamente
         df_fallas = pd.read_csv(URL_FALLAS)
         
-        # Validar que existan las columnas clave
         if 'CÓD' not in df_fallas.columns or 'ESTADO' not in df_fallas.columns or 'FALLA' not in df_fallas.columns:
-            st.warning("⚠️ No encuentro las columnas CÓD, ESTADO o FALLA en el Google Sheet.")
             return df_vacio
             
-        # 1. Filtramos por los ESTADOS requeridos
         estados_validos = ["PENDIENTE TRASLADO", "PENDIENTE TÉCNICO", "PENDIENTE REPUESTO", "EN REVISIÓN"]
-        df_fallas['ESTADO'] = df_fallas['ESTADO'].astype(str).str.strip().str.upper() # Limpiamos espacios
+        df_fallas['ESTADO'] = df_fallas['ESTADO'].astype(str).str.strip().str.upper()
         
         mask_estados = df_fallas['ESTADO'].isin(estados_validos)
         df_filtrado = df_fallas[mask_estados].copy()
         
-        # 2. Renombramos "CÓD" a "Cod Equipo" para que coincida con el Excel de repuestos
-        df_filtrado.rename(columns={'CÓD': 'Cod Equipo', 'FALLA': 'Falla'}, inplace=True)
-        
-        # 3. Limpieza de texto para cruce perfecto
+        # Renombramos y limpiamos
+        df_filtrado.rename(columns={'CÓD': 'Cod Equipo', 'FALLA': 'Falla', 'ESTADO': 'Estado Falla'}, inplace=True)
         df_filtrado['Cod Equipo'] = df_filtrado['Cod Equipo'].astype(str).str.strip().str.upper()
         df_filtrado['Falla'] = df_filtrado['Falla'].astype(str).str.strip()
         
-        # Si un equipo tiene 2 fallas pendientes, nos quedamos con la más reciente (la última de la tabla)
-        df_filtrado = df_filtrado.drop_duplicates(subset=['Cod Equipo'], keep='last')
-        
-        # Devolvemos SOLO las dos columnas que nos interesan
-        return df_filtrado[['Cod Equipo', 'Falla']]
+        return df_filtrado[['Cod Equipo', 'Estado Falla', 'Falla']]
         
     except Exception as e:
-        st.warning(f"⚠️ No se pudo cargar el Google Sheet de Fallas. Verifica que el archivo esté compartido para 'Cualquier persona con el enlace'.")
         return df_vacio
 
 def subir_a_github(df_nuevo):
@@ -112,18 +100,19 @@ def subir_a_github(df_nuevo):
 
 # --- 4. LÓGICA PRINCIPAL ---
 
-st.title("🛠️ Control de Repuestos y Fallas")
+st.title("🛠️ Control de Repuestos y Novedades")
 
 # Carga de datos
-with st.spinner('⏳ Sincronizando inventario y reportes de fallas...'):
+with st.spinner('⏳ Sincronizando bases de datos...'):
     df = cargar_excel_desde_nube()
     df_memoria = cargar_csv_desde_nube()
-    df_fallas = cargar_fallas_espejo()
+    df_fallas_raw = cargar_fallas_espejo() # 100% Independiente
 
 if df is not None:
-    st.success("✅ Sistema completamente Sincronizado", icon="📡")
+    st.success("✅ Sistema Sincronizado", icon="📡")
 
     try:
+        # --- PROCESAMIENTO EXCEL (SIN TOCAR GOOGLE SHEETS) ---
         col_insumo = df.columns[0]
         col_prod = df.columns[1]
         col_equipo = df.columns[6]
@@ -153,7 +142,7 @@ if df is not None:
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
 
-        # 1. Cruzar con memoria de Estados (GitHub)
+        # Cruzar con memoria de Estados (GitHub)
         if not df_memoria.empty:
             df_base['ID_Unico'] = df_base['ID_Unico'].astype(str)
             df_memoria['ID_Unico'] = df_memoria['ID_Unico'].astype(str)
@@ -166,20 +155,10 @@ if df is not None:
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
 
-        # 2. Cruzar con Google Sheets (Fallas)
-        if not df_fallas.empty:
-            df_full = pd.merge(df_full, df_fallas, on='Cod Equipo', how='left')
-        else:
-            df_full['Falla'] = None
-        
-        # Rellenar los que no tienen falla registrada con un guion
-        df_full['Falla'] = df_full['Falla'].fillna('-')
-
         def calcular_semaforo(dias):
             return "🔴 Crítico" if dias > 30 else "🟢 Normal"
         df_full['Prioridad'] = df_full['Días en Almacén'].apply(calcular_semaforo)
 
-        # Función de guardado blindada
         def guardar_todo(df_maestro):
             datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
             subir_a_github(datos)
@@ -189,30 +168,40 @@ if df is not None:
         # --- BARRA LATERAL ---
         st.sidebar.header("🎛️ Panel de Control")
         csv_data = df_full.to_csv(index=False).encode('utf-8-sig') 
-        st.sidebar.download_button("📥 Descargar Reporte Completo (CSV)", data=csv_data, file_name=f"Reporte_{datetime.now().strftime('%Y-%m-%d')}.csv", mime="text/csv")
+        st.sidebar.download_button("📥 Descargar Reporte Repuestos (CSV)", data=csv_data, file_name=f"Repuestos_{datetime.now().strftime('%Y-%m-%d')}.csv", mime="text/csv")
         st.sidebar.divider()
         texto_busqueda = st.sidebar.text_input("🔍 Buscador General", placeholder="Ej: 1661 o Fuga").upper().strip()
         
-        df_view = df_full.copy()
+        # --- FILTROS INDEPENDIENTES ---
+        df_view = df_full.copy() # Base de Repuestos
+        df_fallas_view = df_fallas_raw.copy() # Base de Fallas (Totalmente separada)
+        
         if texto_busqueda:
-            # Ahora busca en Códigos, Nombres de Repuesto, Equipo Y en la Descripción de la Falla
-            mask_busqueda = df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False) | \
-                            df_view['Falla'].astype(str).str.upper().str.contains(texto_busqueda, na=False)
+            # Busca en Repuestos
+            mask_busqueda = df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False)
             df_view = df_view[mask_busqueda]
+            
+            # Busca en Novedades independientemente
+            if not df_fallas_view.empty:
+                mask_fallas = df_fallas_view['Cod Equipo'].str.contains(texto_busqueda, na=False) | \
+                              df_fallas_view['Falla'].astype(str).str.upper().str.contains(texto_busqueda, na=False)
+                df_fallas_view = df_fallas_view[mask_fallas]
 
         # --- TABLERO ---
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🚨 Pendientes", len(df_view[df_view['Estado'] == 'PENDIENTE']))
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("🚨 Repuestos Pend.", len(df_view[df_view['Estado'] == 'PENDIENTE']))
         col2.metric("🛡️ En Reserva", len(df_view[df_view['Estado'] == 'RESERVA']))
         col3.metric("✅ Completados", len(df_view[df_view['Estado'] == 'COMPLETADO']))
+        col4.metric("📋 Novedades Equipos", len(df_fallas_view), delta="Google Sheets", delta_color="inverse")
         st.divider()
 
-        # --- PESTAÑAS Y VISTA ---
-        tab1, tab2, tab3 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS"])
+        # --- PESTAÑAS ---
+        tab1, tab2, tab3, tab4 = st.tabs(["🚨 PENDIENTES (Repuestos)", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES (Solo Consulta)"])
         
-        cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Falla', 'Días en Almacén']
+        # OJO: Ya no está la columna 'Falla' aquí. Son puramente de Repuestos.
+        cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
 
-        # === PENDIENTES ===
+        # === TAB 1: PENDIENTES ===
         with tab1:
             df_p = df_view[df_view['Estado'] == 'PENDIENTE'].sort_values('Días en Almacén', ascending=False).copy()
             if df_p.empty:
@@ -225,7 +214,6 @@ if df is not None:
                         "Sel": st.column_config.CheckboxColumn(width="small"),
                         "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
                         "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
-                        "Falla": st.column_config.TextColumn("⚠️ Falla del Equipo"),
                         "Días en Almacén": st.column_config.NumberColumn("⏳ Días"),
                         "Cod Equipo": st.column_config.TextColumn("Equipo"),
                         "Cód insumo": st.column_config.TextColumn("Código")
@@ -251,7 +239,7 @@ if df is not None:
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
                         guardar_todo(df_full)
 
-        # === RESERVA ===
+        # === TAB 2: RESERVA ===
         with tab2:
             df_r = df_view[df_view['Estado'] == 'RESERVA'].copy()
             if not df_r.empty:
@@ -260,8 +248,7 @@ if df is not None:
                     df_r[['Sel'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
-                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
-                        "Falla": st.column_config.TextColumn("⚠️ Falla del Equipo")
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_r"
                 )
@@ -273,7 +260,7 @@ if df is not None:
             else:
                 st.info("No hay repuestos en reserva.")
 
-        # === COMPLETADOS ===
+        # === TAB 3: COMPLETADOS ===
         with tab3:
             df_c = df_view[df_view['Estado'] == 'COMPLETADO'].copy()
             if not df_c.empty:
@@ -282,8 +269,7 @@ if df is not None:
                     df_c[['Sel'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
-                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
-                        "Falla": st.column_config.TextColumn("⚠️ Falla del Equipo")
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_c"
                 )
@@ -300,6 +286,27 @@ if df is not None:
                         guardar_todo(df_full)
             else:
                 st.info("No hay historial de completados.")
+
+        # === TAB 4: NOVEDADES EQUIPOS (AISLADO) ===
+        with tab4:
+            st.subheader("📋 Estado general de Equipos (Fuente: Google Sheets)")
+            st.write("Esta pestaña es de solo lectura y **no afecta** la gestión de tus repuestos.")
+            
+            if df_fallas_view.empty:
+                st.info("No hay fallas pendientes para mostrar en el archivo de Google Sheets.")
+            else:
+                # Cruce de solo lectura: Solo le dice al usuario si hay un repuesto o no.
+                equipos_pendientes = df_view[df_view['Estado'] == 'PENDIENTE']['Cod Equipo'].unique()
+                df_fallas_view['¿Tiene Repuesto Pendiente?'] = df_fallas_view['Cod Equipo'].apply(
+                    lambda x: "✅ Sí, en Almacén" if x in equipos_pendientes else "⏳ Aún no llega"
+                )
+                
+                # Mostramos la tabla nativa de Pandas
+                st.dataframe(
+                    df_fallas_view[['Cod Equipo', 'Estado Falla', 'Falla', '¿Tiene Repuesto Pendiente?']],
+                    use_container_width=True,
+                    hide_index=True
+                )
 
     except Exception as e:
         st.error(f"❌ Error procesando datos: {e}")
