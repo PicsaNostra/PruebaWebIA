@@ -196,7 +196,7 @@ if df is not None:
         st.divider()
 
         # --- PESTAÑAS ---
-        tab1, tab2, tab3, tab4 = st.tabs(["🚨 REPUESTOS EN ALMACEN", "🛡️ CONTINGENCIA", "✅ COMPLETADOS", "📋 NOVEDADES (Solo Consulta)"])
+        tab1, tab2, tab3, tab4 = st.tabs(["🚨 REPUESTOS EN ALMACEN", "🛡️ CONTINGENCIA", "✅ COMPLETADOS", "📋 NOVEDADES PENDIENTES"])
         
         # OJO: Ya no está la columna 'Falla' aquí. Son puramente de Repuestos.
         cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
