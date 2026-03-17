@@ -58,12 +58,20 @@ def cargar_fallas():
     df_v = pd.DataFrame(columns=['Cod Equipo', 'COMPONENTE', 'Estado Falla', 'Falla'])
     try:
         df = pd.read_csv(URL_FALLAS)
-        if not all(c in df.columns for c in ['CÓD', 'ESTADO', 'FALLA']): return df_v
+        # Limpiamos los nombres de las columnas del Google Sheet
+        df.columns = df.columns.astype(str).str.strip().str.upper()
+        
+        # Buscamos la columna del Código
+        col_cod = 'CÓD' if 'CÓD' in df.columns else ('COD' if 'COD' in df.columns else None)
+        
+        if not col_cod or 'ESTADO' not in df.columns or 'FALLA' not in df.columns: 
+            return df_v
+            
         if 'COMPONENTE' not in df.columns: df['COMPONENTE'] = "SIN DATO"
         
         df['ESTADO'] = df['ESTADO'].astype(str).str.strip().str.upper()
         df = df[df['ESTADO'].isin(["PENDIENTE TRASLADO", "PENDIENTE TÉCNICO", "PENDIENTE REPUESTO", "EN REVISIÓN"])].copy()
-        df.rename(columns={'CÓD': 'Cod Equipo', 'FALLA': 'Falla', 'ESTADO': 'Estado Falla'}, inplace=True)
+        df.rename(columns={col_cod: 'Cod Equipo', 'FALLA': 'Falla', 'ESTADO': 'Estado Falla'}, inplace=True)
         
         for col in ['Cod Equipo', 'Falla', 'COMPONENTE']:
             df[col] = df[col].astype(str).str.strip().str.upper() if col != 'Falla' else df[col].astype(str).str.strip()
@@ -115,24 +123,16 @@ if df_pedidos is not None:
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
 
-        # --- UBICACIONES (LIMPIEZA INTELIGENTE) ---
+        # --- UBICACIONES ---
         if df_est is not None and not df_est.empty:
-            # Quitamos espacios al inicio y final de todas las columnas y las pasamos a mayúsculas
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
-            
-            # Buscamos la columna del equipo (CÓDIGO, EQUIPO, etc.) o tomamos la primera
             col_eq_est = df_est.columns[0]
             for col in df_est.columns:
-                if "CÓD" in col or "COD" in col or "EQUIPO" in col:
-                    col_eq_est = col
-                    break
-                    
-            # Buscamos la columna de OBRA ASIGNACIÓN
+                if "CÓD" in col or "COD" in col or "EQUIPO" in col: col_eq_est = col; break
+            
             col_obra = df_est.columns[5] if len(df_est.columns) > 5 else df_est.columns[-1]
             for col in df_est.columns:
-                if "OBRA" in col or "ASIGNAC" in col:
-                    col_obra = col
-                    break
+                if "OBRA" in col or "ASIGNAC" in col: col_obra = col; break
 
             df_ubi = df_est[[col_eq_est, col_obra]].copy()
             df_ubi.columns = ['Cod Equipo', 'UBICACIÓN']
@@ -146,6 +146,7 @@ if df_pedidos is not None:
         if 'UBICACIÓN' in df_fallas.columns: df_fallas.drop(columns=['UBICACIÓN'], inplace=True)
         if 'COMPONENTE' in df_base.columns: df_base.drop(columns=['COMPONENTE'], inplace=True)
 
+        # Cruzar Ubicaciones
         df_base = pd.merge(df_base, df_ubi, on='Cod Equipo', how='left')
         df_fallas = pd.merge(df_fallas, df_ubi, on='Cod Equipo', how='left')
         
@@ -192,13 +193,7 @@ if df_pedidos is not None:
         with t1:
             df_p = df_view[df_view['Estado']=='PENDIENTE'].sort_values('Días en Almacén', ascending=False)
             if not df_p.empty:
-                with st.expander("📊 Gráficos de Equipos Pendientes", expanded=True):
-                    g1, g2 = st.columns(2)
-                    g1.markdown("📍 **Equipos por Ubicación**")
-                    g1.bar_chart(df_p.groupby('UBICACIÓN')['Cod Equipo'].nunique(), color="#ff4b4b")
-                    g2.markdown("⚙️ **Equipos por Componente**")
-                    g2.bar_chart(df_p.groupby('COMPONENTE')['Cod Equipo'].nunique(), color="#1f77b4")
-                
+                # LA TABLA AHORA ESTÁ SIN GRÁFICOS
                 df_p.insert(0, "Sel", False)
                 ed_p = st.data_editor(df_p[['Sel', 'Ejecucion_Obra', 'Fecha_Prog'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
                 
@@ -246,6 +241,14 @@ if df_pedidos is not None:
 
         with t4:
             if not df_fview.empty:
+                # --- LOS GRÁFICOS AHORA ESTÁN AQUÍ Y LEEN DIRECTO GOOGLE SHEETS ---
+                with st.expander("📊 Gráficos de Novedades (Google Sheets)", expanded=True):
+                    g1, g2 = st.columns(2)
+                    g1.markdown("📍 **Equipos por Ubicación**")
+                    g1.bar_chart(df_fview.groupby('UBICACIÓN')['Cod Equipo'].nunique(), color="#ff4b4b")
+                    g2.markdown("⚙️ **Equipos por Componente**")
+                    g2.bar_chart(df_fview.groupby('COMPONENTE')['Cod Equipo'].nunique(), color="#1f77b4")
+                
                 st.dataframe(df_fview[['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN', 'Estado Falla']], hide_index=True, use_container_width=True)
             else: st.info("Vacío.")
 
