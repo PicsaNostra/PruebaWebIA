@@ -73,6 +73,7 @@ def cargar_fallas():
 def guardar_datos(df_m):
     repo = obtener_repo_privado()
     if not repo: return
+    df_m['Fecha_Prog'] = df_m['Fecha_Prog'].astype(str).replace('NaT', '')
     csv_data = df_m[['ID_Unico', 'Estado', 'Fecha_Prog', 'Ejecucion_Obra']].drop_duplicates('ID_Unico').to_csv(index=False)
     try:
         cont = repo.get_contents(ARCHIVO_CSV)
@@ -114,22 +115,37 @@ if df_pedidos is not None:
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
 
-        # Ubicaciones (Filtro Anti-Choque)
+        # --- UBICACIONES (LIMPIEZA INTELIGENTE) ---
         if df_est is not None and not df_est.empty:
-            col_obra = 'OBRA ASIGNACIÓN' if 'OBRA ASIGNACIÓN' in df_est.columns else df_est.columns[5]
-            df_ubi = df_est[[df_est.columns[0], col_obra]].copy()
+            # Quitamos espacios al inicio y final de todas las columnas y las pasamos a mayúsculas
+            df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
+            
+            # Buscamos la columna del equipo (CÓDIGO, EQUIPO, etc.) o tomamos la primera
+            col_eq_est = df_est.columns[0]
+            for col in df_est.columns:
+                if "CÓD" in col or "COD" in col or "EQUIPO" in col:
+                    col_eq_est = col
+                    break
+                    
+            # Buscamos la columna de OBRA ASIGNACIÓN
+            col_obra = df_est.columns[5] if len(df_est.columns) > 5 else df_est.columns[-1]
+            for col in df_est.columns:
+                if "OBRA" in col or "ASIGNAC" in col:
+                    col_obra = col
+                    break
+
+            df_ubi = df_est[[col_eq_est, col_obra]].copy()
             df_ubi.columns = ['Cod Equipo', 'UBICACIÓN']
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
+            df_ubi['UBICACIÓN'] = df_ubi['UBICACIÓN'].astype(str).str.strip()
             df_ubi = df_ubi.drop_duplicates('Cod Equipo', keep='last')
         else:
             df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN'])
 
-        # Prevenir colisiones de columnas
         if 'UBICACIÓN' in df_base.columns: df_base.drop(columns=['UBICACIÓN'], inplace=True)
         if 'UBICACIÓN' in df_fallas.columns: df_fallas.drop(columns=['UBICACIÓN'], inplace=True)
         if 'COMPONENTE' in df_base.columns: df_base.drop(columns=['COMPONENTE'], inplace=True)
 
-        # Cruces
         df_base = pd.merge(df_base, df_ubi, on='Cod Equipo', how='left')
         df_fallas = pd.merge(df_fallas, df_ubi, on='Cod Equipo', how='left')
         
@@ -142,13 +158,15 @@ if df_pedidos is not None:
 
         # Memoria
         if not df_mem.empty:
-            df_full = pd.merge(df_base, df_mem.astype(str), on='ID_Unico', how='left')
-            df_full['Ejecucion_Obra'] = df_full['Ejecucion_Obra'].map({'True': True, 'False': False}).fillna(False)
+            df_mem['ID_Unico'] = df_mem['ID_Unico'].astype(str)
+            df_full = pd.merge(df_base, df_mem, on='ID_Unico', how='left')
         else:
             df_full = df_base.copy()
             df_full['Estado'], df_full['Fecha_Prog'], df_full['Ejecucion_Obra'] = 'PENDIENTE', None, False
 
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
+        df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce') 
+        df_full['Ejecucion_Obra'] = df_full['Ejecucion_Obra'].fillna(False).astype(bool)
         df_full['Prioridad'] = df_full['Días en Almacén'].apply(lambda x: "🔴 Crítico" if x > 30 else "🟢 Normal")
 
         # --- PANEL E INTERFAZ ---
@@ -176,7 +194,6 @@ if df_pedidos is not None:
             if not df_p.empty:
                 with st.expander("📊 Gráficos de Equipos Pendientes", expanded=True):
                     g1, g2 = st.columns(2)
-                    # Gráficos de equipos únicos para evitar repuestos duplicados
                     g1.markdown("📍 **Equipos por Ubicación**")
                     g1.bar_chart(df_p.groupby('UBICACIÓN')['Cod Equipo'].nunique(), color="#ff4b4b")
                     g2.markdown("⚙️ **Equipos por Componente**")
