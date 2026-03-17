@@ -12,6 +12,7 @@ st.set_page_config(page_title="Gestor Repuestos Pro", layout="wide", page_icon="
 # --- 2. CONSTANTES DE CONEXIÓN ---
 REPO_DATOS = "PicsaNostra/DatosRepuestos" 
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
+ARCHIVO_ESTADOS = "ESTADOS%20DE%20EQUIPOS.xlsx" 
 ARCHIVO_CSV = "datos_gestion.csv"
 RAMA = "main"
 
@@ -39,50 +40,65 @@ def cargar_excel_desde_nube():
     token = obtener_token()
     url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
     headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3.raw"}
-    
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             return pd.read_excel(io.BytesIO(response.content), engine='openpyxl')
-        else:
-            return None
+        return None
     except:
+        return None
+
+@st.cache_data(ttl=600)
+def cargar_estados_desde_nube():
+    token = obtener_token()
+    url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_ESTADOS}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3.raw"}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return pd.read_excel(io.BytesIO(response.content), sheet_name="INFORMACIÓN EDITABLE", engine='openpyxl')
+        return None
+    except Exception as e:
         return None
 
 def cargar_csv_desde_nube():
     repo = obtener_repo_privado()
-    df_vacio = pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog'])
+    df_vacio = pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog', 'Ejecucion_Obra'])
     if not repo: return df_vacio
     try:
         contenido = repo.get_contents(ARCHIVO_CSV).decoded_content
-        return pd.read_csv(io.BytesIO(contenido))
+        df_csv = pd.read_csv(io.BytesIO(contenido))
+        if 'Ejecucion_Obra' not in df_csv.columns:
+            df_csv['Ejecucion_Obra'] = False
+        df_csv['Ejecucion_Obra'] = df_csv['Ejecucion_Obra'].fillna(False).astype(bool)
+        return df_csv
     except:
         return df_vacio
 
 @st.cache_data(ttl=300)
 def cargar_fallas_espejo():
-    """Descarga las fallas del Google Sheet de forma 100% independiente"""
-    df_vacio = pd.DataFrame(columns=['Cod Equipo', 'Estado Falla', 'Falla'])
-    
+    df_vacio = pd.DataFrame(columns=['Cod Equipo', 'COMPONENTE', 'Estado Falla', 'Falla'])
     try:
         df_fallas = pd.read_csv(URL_FALLAS)
         
         if 'CÓD' not in df_fallas.columns or 'ESTADO' not in df_fallas.columns or 'FALLA' not in df_fallas.columns:
             return df_vacio
             
+        if 'COMPONENTE' not in df_fallas.columns:
+            df_fallas['COMPONENTE'] = "SIN DATO"
+
         estados_validos = ["PENDIENTE TRASLADO", "PENDIENTE TÉCNICO", "PENDIENTE REPUESTO", "EN REVISIÓN"]
         df_fallas['ESTADO'] = df_fallas['ESTADO'].astype(str).str.strip().str.upper()
         
         mask_estados = df_fallas['ESTADO'].isin(estados_validos)
         df_filtrado = df_fallas[mask_estados].copy()
         
-        # Renombramos y limpiamos
         df_filtrado.rename(columns={'CÓD': 'Cod Equipo', 'FALLA': 'Falla', 'ESTADO': 'Estado Falla'}, inplace=True)
         df_filtrado['Cod Equipo'] = df_filtrado['Cod Equipo'].astype(str).str.strip().str.upper()
         df_filtrado['Falla'] = df_filtrado['Falla'].astype(str).str.strip()
+        df_filtrado['COMPONENTE'] = df_filtrado['COMPONENTE'].astype(str).str.strip()
         
-        return df_filtrado[['Cod Equipo', 'Estado Falla', 'Falla']]
-        
+        return df_filtrado[['Cod Equipo', 'COMPONENTE', 'Estado Falla', 'Falla']]
     except Exception as e:
         return df_vacio
 
@@ -102,17 +118,16 @@ def subir_a_github(df_nuevo):
 
 st.title("🛠️ Control de Repuestos y Novedades")
 
-# Carga de datos
-with st.spinner('⏳ Sincronizando bases de datos...'):
+with st.spinner('⏳ Sincronizando inventarios, ubicaciones y diagramas...'):
     df = cargar_excel_desde_nube()
+    df_estados = cargar_estados_desde_nube()
     df_memoria = cargar_csv_desde_nube()
-    df_fallas_raw = cargar_fallas_espejo() # 100% Independiente
+    df_fallas_raw = cargar_fallas_espejo() 
 
 if df is not None:
     st.success("✅ Sistema Sincronizado", icon="📡")
 
     try:
-        # --- PROCESAMIENTO EXCEL (SIN TOCAR GOOGLE SHEETS) ---
         col_insumo = df.columns[0]
         col_prod = df.columns[1]
         col_equipo = df.columns[6]
@@ -142,7 +157,38 @@ if df is not None:
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int)
         df_base['Días en Almacén'] = df_base['Días en Almacén'].apply(lambda x: x if x > 0 else 0)
 
-        # Cruzar con memoria de Estados (GitHub)
+        # --- PROCESAMIENTO UBICACIONES ---
+        if df_estados is not None and not df_estados.empty:
+            col_eq_est = df_estados.columns[0] 
+            if 'OBRA ASIGNACIÓN' in df_estados.columns:
+                col_obra = 'OBRA ASIGNACIÓN'
+            elif len(df_estados.columns) > 5:
+                col_obra = df_estados.columns[5]
+            else:
+                col_obra = df_estados.columns[-1]
+
+            df_ubicacion = df_estados[[col_eq_est, col_obra]].copy()
+            df_ubicacion.rename(columns={col_eq_est: 'Cod Equipo', col_obra: 'UBICACIÓN'}, inplace=True)
+            df_ubicacion['Cod Equipo'] = df_ubicacion['Cod Equipo'].astype(str).str.strip().str.upper()
+            df_ubicacion['UBICACIÓN'] = df_ubicacion['UBICACIÓN'].astype(str).str.strip()
+            df_ubicacion = df_ubicacion.drop_duplicates(subset=['Cod Equipo'], keep='last')
+        else:
+            df_ubicacion = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN'])
+
+        # Cruzar Repuestos con Ubicación
+        df_base = pd.merge(df_base, df_ubicacion, on='Cod Equipo', how='left')
+        df_base['UBICACIÓN'] = df_base['UBICACIÓN'].fillna('SIN DATO')
+
+        # --- EXTRAER COMPONENTE PARA EL GRÁFICO ---
+        if not df_fallas_raw.empty:
+            df_comp = df_fallas_raw[['Cod Equipo', 'COMPONENTE']].drop_duplicates(subset=['Cod Equipo'], keep='last')
+            df_base = pd.merge(df_base, df_comp, on='Cod Equipo', how='left')
+        else:
+            df_base['COMPONENTE'] = 'SIN DATO'
+        
+        df_base['COMPONENTE'] = df_base['COMPONENTE'].fillna('SIN DATO')
+
+        # --- CRUZAR CON MEMORIA ---
         if not df_memoria.empty:
             df_base['ID_Unico'] = df_base['ID_Unico'].astype(str)
             df_memoria['ID_Unico'] = df_memoria['ID_Unico'].astype(str)
@@ -151,16 +197,18 @@ if df is not None:
             df_full = df_base.copy()
             df_full['Estado'] = 'PENDIENTE'
             df_full['Fecha_Prog'] = None
+            df_full['Ejecucion_Obra'] = False
 
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
+        df_full['Ejecucion_Obra'] = df_full['Ejecucion_Obra'].fillna(False).astype(bool)
 
         def calcular_semaforo(dias):
             return "🔴 Crítico" if dias > 30 else "🟢 Normal"
         df_full['Prioridad'] = df_full['Días en Almacén'].apply(calcular_semaforo)
 
         def guardar_todo(df_maestro):
-            datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog']].drop_duplicates(subset=['ID_Unico'])
+            datos = df_maestro[['ID_Unico', 'Estado', 'Fecha_Prog', 'Ejecucion_Obra']].drop_duplicates(subset=['ID_Unico'])
             subir_a_github(datos)
             st.cache_data.clear()
             st.rerun()
@@ -172,19 +220,20 @@ if df is not None:
         st.sidebar.divider()
         texto_busqueda = st.sidebar.text_input("🔍 Buscador General", placeholder="Ej: 1661 o Fuga").upper().strip()
         
-        # --- FILTROS INDEPENDIENTES ---
-        df_view = df_full.copy() # Base de Repuestos
-        df_fallas_view = df_fallas_raw.copy() # Base de Fallas (Totalmente separada)
+        # --- FILTROS ---
+        df_view = df_full.copy()
+        df_fallas_view = df_fallas_raw.copy()
         
         if texto_busqueda:
-            # Busca en Repuestos
-            mask_busqueda = df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False)
+            mask_busqueda = df_view['BUSQUEDA_TOTAL'].str.contains(texto_busqueda, na=False) | \
+                            df_view['UBICACIÓN'].str.contains(texto_busqueda, na=False, case=False)
             df_view = df_view[mask_busqueda]
             
-            # Busca en Novedades independientemente
             if not df_fallas_view.empty:
                 mask_fallas = df_fallas_view['Cod Equipo'].str.contains(texto_busqueda, na=False) | \
-                              df_fallas_view['Falla'].astype(str).str.upper().str.contains(texto_busqueda, na=False)
+                              df_fallas_view['Falla'].astype(str).str.upper().str.contains(texto_busqueda, na=False) | \
+                              df_fallas_view['COMPONENTE'].astype(str).str.upper().str.contains(texto_busqueda, na=False) | \
+                              df_fallas_view['UBICACIÓN'].astype(str).str.upper().str.contains(texto_busqueda, na=False)
                 df_fallas_view = df_fallas_view[mask_fallas]
 
         # --- TABLERO ---
@@ -196,10 +245,9 @@ if df is not None:
         st.divider()
 
         # --- PESTAÑAS ---
-        tab1, tab2, tab3, tab4 = st.tabs(["🚨 REPUESTOS EN ALMACEN", "🛡️ CONTINGENCIA", "✅ COMPLETADOS", "📋 NOVEDADES PENDIENTES"])
+        tab1, tab2, tab3, tab4 = st.tabs(["🚨 PENDIENTES (Repuestos)", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES (Solo Consulta)"])
         
-        # OJO: Ya no está la columna 'Falla' aquí. Son puramente de Repuestos.
-        cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Días en Almacén']
+        cols_vis = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'UBICACIÓN', 'Días en Almacén']
 
         # === TAB 1: PENDIENTES ===
         with tab1:
@@ -207,13 +255,31 @@ if df is not None:
             if df_p.empty:
                 st.info("✨ Todo limpio o sin coincidencias.")
             else:
+                # --- NUEVOS DIAGRAMAS ---
+                with st.expander("📊 Diagramas de Equipos Pendientes", expanded=True):
+                    g1, g2 = st.columns(2)
+                    with g1:
+                        st.markdown("📍 **Cantidad de Equipos por Ubicación**")
+                        # Cuenta equipos únicos para no duplicar si tienen varios repuestos
+                        grafico_ubi = df_p.groupby('UBICACIÓN')['Cod Equipo'].nunique().sort_values(ascending=False)
+                        st.bar_chart(grafico_ubi, color="#ff4b4b")
+                    with g2:
+                        st.markdown("⚙️ **Cantidad de Equipos por Componente**")
+                        grafico_comp = df_p.groupby('COMPONENTE')['Cod Equipo'].nunique().sort_values(ascending=False)
+                        st.bar_chart(grafico_comp, color="#1f77b4")
+                
+                st.divider()
+
+                # --- TABLA DE PENDIENTES ---
                 df_p.insert(0, "Sel", False)
                 ed_p = st.data_editor(
-                    df_p[['Sel', 'Fecha_Prog'] + cols_vis],
+                    df_p[['Sel', 'Ejecucion_Obra', 'Fecha_Prog'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
+                        "Ejecucion_Obra": st.column_config.CheckboxColumn("🏗️ En Obra", width="small", help="Marcar si se puede ejecutar en la obra"),
                         "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
                         "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
+                        "UBICACIÓN": st.column_config.TextColumn("Ubicación Equipo", width="medium"),
                         "Días en Almacén": st.column_config.NumberColumn("⏳ Días"),
                         "Cod Equipo": st.column_config.TextColumn("Equipo"),
                         "Cód insumo": st.column_config.TextColumn("Código")
@@ -221,11 +287,12 @@ if df is not None:
                     disabled=cols_vis, hide_index=True, key="ed_p"
                 )
 
-                if st.button("💾 Guardar Fechas", type="primary", key="btn_save_dates"):
+                if st.button("💾 Guardar Cambios (Fechas y Obra)", type="primary", key="btn_save_dates"):
                     for idx, row in ed_p.iterrows():
                         idx_real = idx 
                         id_u = df_p.loc[idx_real]['ID_Unico']
                         df_full.loc[df_full['ID_Unico'] == id_u, 'Fecha_Prog'] = row['Fecha_Prog']
+                        df_full.loc[df_full['ID_Unico'] == id_u, 'Ejecucion_Obra'] = row['Ejecucion_Obra']
                     guardar_todo(df_full)
 
                 sel = ed_p[ed_p['Sel'] == True]
@@ -248,7 +315,8 @@ if df is not None:
                     df_r[['Sel'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
-                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
+                        "UBICACIÓN": st.column_config.TextColumn("Ubicación")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_r"
                 )
@@ -269,7 +337,8 @@ if df is not None:
                     df_c[['Sel'] + cols_vis],
                     column_config={
                         "Sel": st.column_config.CheckboxColumn(width="small"),
-                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small")
+                        "Prioridad": st.column_config.TextColumn("Prioridad", width="small"),
+                        "UBICACIÓN": st.column_config.TextColumn("Ubicación")
                     },
                     disabled=cols_vis, hide_index=True, key="ed_c"
                 )
@@ -287,29 +356,30 @@ if df is not None:
             else:
                 st.info("No hay historial de completados.")
 
-        # === TAB 4: NOVEDADES EQUIPOS (AISLADO) ===
+        # === TAB 4: NOVEDADES EQUIPOS ===
         with tab4:
-            st.subheader("📋 PENDIENTES EQUIPOS")
-            st.write("Esta pestaña es de solo lectura y **no afecta** la gestión de tus repuestos.")
+            st.subheader("📋 Estado general de Novedades")
+            st.write("Tip: Puedes **filtrar cualquier columna** haciendo clic en el título de la columna y seleccionando el icono de la lupa o las tres líneas (Filtro).")
             
             if df_fallas_view.empty:
-                st.info("No hay fallas pendientes para mostrar en el archivo de Google Sheets.")
+                st.info("No hay fallas pendientes.")
             else:
-                # Cruce de solo lectura: Solo le dice al usuario si hay un repuesto o no.
-                equipos_pendientes = df_view[df_view['Estado'] == 'PENDIENTE']['Cod Equipo'].unique()
-                df_fallas_view['¿Tiene Repuesto Pendiente?'] = df_fallas_view['Cod Equipo'].apply(
-                    lambda x: "✅ Sí, en Almacén" if x in equipos_pendientes else "⏳ Aún no llega"
-                )
+                columnas_mostrar = ['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN', 'Estado Falla']
                 
-                # Mostramos la tabla nativa de Pandas
                 st.dataframe(
-                    df_fallas_view[['Cod Equipo', 'Estado Falla', 'Falla', '¿Tiene Repuesto Pendiente?']],
+                    df_fallas_view[columnas_mostrar],
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    column_config={
+                        "Cod Equipo": st.column_config.TextColumn("CÓD"),
+                        "COMPONENTE": st.column_config.TextColumn("Componente"),
+                        "Falla": st.column_config.TextColumn("Falla Reportada"),
+                        "UBICACIÓN": st.column_config.TextColumn("Ubicación actual")
+                    }
                 )
 
     except Exception as e:
         st.error(f"❌ Error procesando datos: {e}")
         st.write(e)
 else:
-    st.warning("⚠️ No se cargaron datos.")
+    st.warning("⚠️ No se cargaron datos. Revisa el Excel de pedidos.")
