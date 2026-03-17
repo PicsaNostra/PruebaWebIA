@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import io, requests
 from github import Github
-import altair as alt  # NUEVO: Librería avanzada para gráficos ordenados
+import altair as alt
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor Repuestos Pro", layout="wide", page_icon="🛠️")
@@ -12,7 +12,7 @@ REPO_DATOS = "PicsaNostra/DatosRepuestos"
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_ESTADOS = "ESTADOS%20DE%20EQUIPOS.xlsx" 
 ARCHIVO_CSV = "datos_gestion.csv"
-ARCHIVO_CSV_FALLAS = "fallas_gestion.csv" # NUEVO: Memoria para las fallas
+ARCHIVO_CSV_FALLAS = "fallas_gestion.csv" 
 RAMA = "main"
 URL_FALLAS = "https://docs.google.com/spreadsheets/d/1o22GZKmqCmuABGaR1nyLe2jCMBti7cWJtv38wvgH0PQ/export?format=csv&gid=0"
 
@@ -56,7 +56,6 @@ def cargar_memoria():
     except: return df_vacio
 
 def cargar_memoria_fallas():
-    # NUEVO: Lector de memoria para las casillas de Novedades
     repo = obtener_repo_privado()
     df_vacio = pd.DataFrame(columns=['ID_Falla', 'Enviar_Tecnico'])
     if not repo: return df_vacio
@@ -102,7 +101,6 @@ def guardar_datos(df_m):
     st.rerun()
 
 def guardar_datos_fallas(df_f):
-    # NUEVO: Guardador de memoria para las Novedades
     repo = obtener_repo_privado()
     if not repo: return
     csv_data = df_f[['ID_Falla', 'Enviar_Tecnico']].drop_duplicates('ID_Falla').to_csv(index=False)
@@ -121,7 +119,7 @@ with st.spinner('⏳ Sincronizando...'):
     df_pedidos = cargar_excel()
     df_est = cargar_estados()
     df_mem = cargar_memoria()
-    df_mem_fallas = cargar_memoria_fallas() # Cargamos memoria de fallas
+    df_mem_fallas = cargar_memoria_fallas()
     df_fallas = cargar_fallas()
 
 if df_pedidos is not None:
@@ -273,57 +271,71 @@ if df_pedidos is not None:
 
         with t4:
             if not df_fview.empty:
-                with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
-                    g1, g2, g3 = st.columns(3)
-                    
-                    # Gráfico 1: Ubicación
-                    df_ubi_chart = df_fview.groupby('UBICACIÓN')['Cod Equipo'].nunique().reset_index(name='Cantidad')
-                    chart_ubi = alt.Chart(df_ubi_chart).mark_bar(color="#ff4b4b").encode(
-                        x=alt.X('UBICACIÓN:N', sort='-y', title='Ubicación'),
-                        y=alt.Y('Cantidad:Q', title='Equipos')
-                    )
-                    g1.markdown("📍 **Equipos por Ubicación**")
-                    g1.altair_chart(chart_ubi, use_container_width=True)
-                    
-                    # Gráfico 2: Componente
-                    df_comp_chart = df_fview.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')
-                    chart_comp = alt.Chart(df_comp_chart).mark_bar(color="#1f77b4").encode(
-                        x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
-                        y=alt.Y('Cantidad:Q', title='Equipos')
-                    )
-                    g2.markdown("⚙️ **Equipos por Componente**")
-                    g2.altair_chart(chart_comp, use_container_width=True)
-
-                    # Gráfico 3: Técnico en Obra
-                    df_tec_chart = df_fview['Enviar_Tecnico'].value_counts().reset_index()
-                    df_tec_chart.columns = ['Estado', 'Cantidad']
-                    df_tec_chart['Estado'] = df_tec_chart['Estado'].map({True: 'En Obra', False: 'Taller / Pendiente'})
-                    chart_tec = alt.Chart(df_tec_chart).mark_bar(color="#2ca02c").encode(
-                        x=alt.X('Estado:N', sort='-y', title='Resolución'),
-                        y=alt.Y('Cantidad:Q', title='Actividades')
-                    )
-                    g3.markdown("👷 **Actividades en Obra**")
-                    g3.altair_chart(chart_tec, use_container_width=True)
                 
-                # Tabla Editable de Novedades
-                cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN']
-                ed_f = st.data_editor(
-                    df_fview[['Enviar_Tecnico'] + cols_f],
-                    column_config={
-                        "Enviar_Tecnico": st.column_config.CheckboxColumn("👷 ENVIAR TÉCNICO A OBRA", width="medium"),
-                        "Cod Equipo": st.column_config.TextColumn("CÓD"),
-                        "COMPONENTE": st.column_config.TextColumn("Componente"),
-                        "Falla": st.column_config.TextColumn("Falla Reportada"),
-                        "UBICACIÓN": st.column_config.TextColumn("Ubicación actual")
-                    },
-                    disabled=cols_f, hide_index=True, key="ed_f"
-                )
+                # --- NUEVO FILTRO POR UBICACIÓN ---
+                ubicaciones_disponibles = sorted(df_fview['UBICACIÓN'].dropna().unique())
+                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
+                
+                # Aplicar el filtro si se seleccionó algo
+                df_fview_filtrado = df_fview.copy()
+                if filtro_ubi:
+                    df_fview_filtrado = df_fview_filtrado[df_fview_filtrado['UBICACIÓN'].isin(filtro_ubi)]
 
-                if st.button("💾 Guardar Gestión de Novedades", type="primary", key="btn_save_fallas"):
-                    for i, r in ed_f.iterrows():
-                        id_f = df_fview.loc[i, 'ID_Falla']
-                        df_fallas.loc[df_fallas['ID_Falla'] == id_f, 'Enviar_Tecnico'] = r['Enviar_Tecnico']
-                    guardar_datos_fallas(df_fallas)
+                if df_fview_filtrado.empty:
+                    st.warning("No hay novedades en la ubicación seleccionada.")
+                else:
+                    with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
+                        g1, g2, g3 = st.columns(3)
+                        
+                        # Gráfico 1: Ubicación
+                        df_ubi_chart = df_fview_filtrado.groupby('UBICACIÓN')['Cod Equipo'].nunique().reset_index(name='Cantidad')
+                        chart_ubi = alt.Chart(df_ubi_chart).mark_bar(color="#ff4b4b").encode(
+                            x=alt.X('UBICACIÓN:N', sort='-y', title='Ubicación'),
+                            y=alt.Y('Cantidad:Q', title='Equipos')
+                        )
+                        g1.markdown("📍 **Equipos por Ubicación**")
+                        g1.altair_chart(chart_ubi, use_container_width=True)
+                        
+                        # Gráfico 2: Componente
+                        df_comp_chart = df_fview_filtrado.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')
+                        chart_comp = alt.Chart(df_comp_chart).mark_bar(color="#1f77b4").encode(
+                            x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
+                            y=alt.Y('Cantidad:Q', title='Equipos')
+                        )
+                        g2.markdown("⚙️ **Equipos por Componente**")
+                        g2.altair_chart(chart_comp, use_container_width=True)
+
+                        # Gráfico 3: Técnico en Obra
+                        df_tec_chart = df_fview_filtrado['Enviar_Tecnico'].value_counts().reset_index()
+                        df_tec_chart.columns = ['Estado', 'Cantidad']
+                        df_tec_chart['Estado'] = df_tec_chart['Estado'].map({True: 'En Obra', False: 'Taller / Pendiente'})
+                        chart_tec = alt.Chart(df_tec_chart).mark_bar(color="#2ca02c").encode(
+                            x=alt.X('Estado:N', sort='-y', title='Resolución'),
+                            y=alt.Y('Cantidad:Q', title='Actividades')
+                        )
+                        g3.markdown("👷 **Actividades en Obra**")
+                        g3.altair_chart(chart_tec, use_container_width=True)
+                    
+                    # Tabla Editable de Novedades
+                    cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN']
+                    ed_f = st.data_editor(
+                        df_fview_filtrado[['Enviar_Tecnico'] + cols_f],
+                        column_config={
+                            "Enviar_Tecnico": st.column_config.CheckboxColumn("👷 ENVIAR TÉCNICO A OBRA", width="medium"),
+                            "Cod Equipo": st.column_config.TextColumn("CÓD"),
+                            "COMPONENTE": st.column_config.TextColumn("Componente"),
+                            "Falla": st.column_config.TextColumn("Falla Reportada"),
+                            "UBICACIÓN": st.column_config.TextColumn("Ubicación actual")
+                        },
+                        disabled=cols_f, hide_index=True, key="ed_f"
+                    )
+
+                    if st.button("💾 Guardar Gestión de Novedades", type="primary", key="btn_save_fallas"):
+                        for i, r in ed_f.iterrows():
+                            # Aseguramos guardar con el ID correcto respetando el filtro
+                            id_f = df_fview_filtrado.loc[i, 'ID_Falla']
+                            df_fallas.loc[df_fallas['ID_Falla'] == id_f, 'Enviar_Tecnico'] = r['Enviar_Tecnico']
+                        guardar_datos_fallas(df_fallas)
             else: st.info("Vacío.")
 
     except Exception as e: st.error(f"❌ Error: {e}")
