@@ -145,7 +145,7 @@ if df_pedidos is not None:
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
 
-        # --- UBICACIONES ---
+        # --- UBICACIONES (MAPEO ESTRICTO SOLICITADO) ---
         if df_est is not None and not df_est.empty:
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
             col_eq_est = df_est.columns[0]
@@ -154,13 +154,23 @@ if df_pedidos is not None:
             
             col_obra = df_est.columns[5] if len(df_est.columns) > 5 else df_est.columns[-1]
             for col in df_est.columns:
-                if "OBRA" in col or "ASIGNAC" in col: col_obra = col; break
+                if "UBICACI" in col or "OBRA" in col or "ASIGNAC" in col: col_obra = col; break
 
             df_ubi = df_est[[col_eq_est, col_obra]].copy()
-            df_ubi.columns = ['Cod Equipo', 'UBICACIÓN']
+            df_ubi.columns = ['Cod Equipo', 'UBICACIÓN_RAW']
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
-            df_ubi['UBICACIÓN'] = df_ubi['UBICACIÓN'].astype(str).str.strip()
+            
+            # Olvidamos la lectura directa y aplicamos las 3 opciones estrictas
+            def limpiar_ubicacion(u):
+                u_str = str(u).upper()
+                if "SIBAT" in u_str: return "Equipos Sibate"
+                if "0348" in u_str: return "IDU 0348 GRUPO 4"
+                if "0351" in u_str: return "IDU 0351 GRUPO 7"
+                return "OTRA UBICACIÓN"
+                
+            df_ubi['UBICACIÓN'] = df_ubi['UBICACIÓN_RAW'].apply(limpiar_ubicacion)
             df_ubi = df_ubi.drop_duplicates('Cod Equipo', keep='last')
+            df_ubi = df_ubi[['Cod Equipo', 'UBICACIÓN']]
         else:
             df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN'])
 
@@ -203,7 +213,7 @@ if df_pedidos is not None:
 
         # --- PANEL E INTERFAZ ---
         st.sidebar.download_button("📥 Descargar CSV", df_full.to_csv(index=False).encode('utf-8-sig'), "Repuestos.csv", "text/csv")
-        txt_busq = st.sidebar.text_input("🔍 Buscador", placeholder="Ej: 1661").upper().strip()
+        txt_busq = st.sidebar.text_input("🔍 Buscador General", placeholder="Ej: 1661").upper().strip()
         
         df_view, df_fview = df_full.copy(), df_fallas.copy()
         if txt_busq:
@@ -271,18 +281,15 @@ if df_pedidos is not None:
 
         with t4:
             if not df_fview.empty:
+                # --- NUEVO FILTRO RESTRINGIDO (SOLO LAS 3 OPCIONES) ---
+                ubicaciones_fijas = ["Equipos Sibate", "IDU 0348 GRUPO 4", "IDU 0351 GRUPO 7"]
+                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_fijas, default=ubicaciones_fijas)
                 
-                # --- NUEVO FILTRO POR UBICACIÓN ---
-                ubicaciones_disponibles = sorted(df_fview['UBICACIÓN'].dropna().unique())
-                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
-                
-                # Aplicar el filtro si se seleccionó algo
-                df_fview_filtrado = df_fview.copy()
-                if filtro_ubi:
-                    df_fview_filtrado = df_fview_filtrado[df_fview_filtrado['UBICACIÓN'].isin(filtro_ubi)]
+                # Filtrar la tabla a las seleccionadas
+                df_fview_filtrado = df_fview[df_fview['UBICACIÓN'].isin(filtro_ubi)].copy()
 
                 if df_fview_filtrado.empty:
-                    st.warning("No hay novedades en la ubicación seleccionada.")
+                    st.warning("No hay novedades en las ubicaciones seleccionadas o no has seleccionado ninguna.")
                 else:
                     with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
                         g1, g2, g3 = st.columns(3)
@@ -316,7 +323,7 @@ if df_pedidos is not None:
                         g3.markdown("👷 **Actividades en Obra**")
                         g3.altair_chart(chart_tec, use_container_width=True)
                     
-                    # Tabla Editable de Novedades
+                    # Tabla Editable
                     cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN']
                     ed_f = st.data_editor(
                         df_fview_filtrado[['Enviar_Tecnico'] + cols_f],
@@ -332,7 +339,6 @@ if df_pedidos is not None:
 
                     if st.button("💾 Guardar Gestión de Novedades", type="primary", key="btn_save_fallas"):
                         for i, r in ed_f.iterrows():
-                            # Aseguramos guardar con el ID correcto respetando el filtro
                             id_f = df_fview_filtrado.loc[i, 'ID_Falla']
                             df_fallas.loc[df_fallas['ID_Falla'] == id_f, 'Enviar_Tecnico'] = r['Enviar_Tecnico']
                         guardar_datos_fallas(df_fallas)
