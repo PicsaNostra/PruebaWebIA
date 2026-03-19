@@ -112,6 +112,14 @@ def guardar_datos_fallas(df_f):
     st.cache_data.clear()
     st.rerun()
 
+# --- Función Limpiadora de Ubicaciones ---
+def limpiar_ubicacion(u):
+    u_str = str(u).upper()
+    if "SIBAT" in u_str: return "Equipos Sibate"
+    if "0348" in u_str: return "IDU 0348 GRUPO 4"
+    if "0351" in u_str: return "IDU 0351 GRUPO 7"
+    return "OTRA UBICACIÓN"
+
 # --- 3. LÓGICA PRINCIPAL ---
 st.title("🛠️ Control de Repuestos y Novedades")
 
@@ -125,18 +133,24 @@ with st.spinner('⏳ Sincronizando...'):
 if df_pedidos is not None:
     st.success("✅ Sistema Sincronizado", icon="📡")
     try:
-        # --- LIMPIEZA EXCEL PRINCIPAL ---
-        df_pedidos.rename(columns={df_pedidos.columns[0]: 'Cód insumo', df_pedidos.columns[1]: 'Producto', 
-                                   df_pedidos.columns[6]: 'Cod Equipo', df_pedidos.columns[17]: 'Fecha_Llegada'}, inplace=True)
+        # --- LIMPIEZA EXCEL PRINCIPAL (PEDIDOS) ---
+        df_pedidos.rename(columns={
+            df_pedidos.columns[0]: 'Cód insumo', 
+            df_pedidos.columns[1]: 'Producto', 
+            df_pedidos.columns[4]: 'UBICACION_PEDIDO', # Tomamos la ubicación directamente de Pedidos
+            df_pedidos.columns[6]: 'Cod Equipo', 
+            df_pedidos.columns[17]: 'Fecha_Llegada'
+        }, inplace=True)
+        
         for c in ['Cód insumo', 'Producto', 'Cod Equipo']: 
             df_pedidos[c] = df_pedidos[c].astype(str).str.strip().str.upper()
             
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
         
-        # Filtro estricto para las 3 obras desde el excel de PEDIDOS
+        # Filtro inicial buscando las obras en la columna UBICACION_PEDIDO
         mask = (~df_pedidos['Producto'].str.contains('|'.join(excluir), case=False, na=False)) & \
-               (df_pedidos.iloc[:, 4].astype(str).str.contains("SIBAT|0348|0351", case=False, na=False)) & \
+               (df_pedidos['UBICACION_PEDIDO'].astype(str).str.contains("SIBAT|0348|0351", case=False, na=False)) & \
                (~df_pedidos['Cod Equipo'].str.startswith('3')) & (df_pedidos['Cod Equipo'] != "A.C.PM") & \
                (pd.to_numeric(df_pedidos.iloc[:, 11], errors='coerce') > 0) & (df_pedidos['Fecha_Llegada'].notna())
 
@@ -145,8 +159,11 @@ if df_pedidos is not None:
         df_base['BUSQUEDA_TOTAL'] = df_base['Cód insumo'] + " " + df_base['Producto'] + " " + df_base['Cod Equipo']
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
+        
+        # Aplicamos la limpieza estricta a los repuestos
+        df_base['Ubicación Equipo'] = df_base['UBICACION_PEDIDO'].apply(limpiar_ubicacion)
 
-        # --- UBICACIONES (ESTADOS DE EQUIPOS) ---
+        # --- UBICACIONES NOVEDADES (ARCHIVO DE ESTADOS) ---
         if df_est is not None and not df_est.empty:
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
             col_eq_est = df_est.columns[0]
@@ -160,35 +177,18 @@ if df_pedidos is not None:
             df_ubi = df_est[[col_eq_est, col_obra]].copy()
             df_ubi.columns = ['Cod Equipo', 'UBICACIÓN_RAW']
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
-            df_ubi['UBICACIÓN_RAW'] = df_ubi['UBICACIÓN_RAW'].astype(str).str.strip()
-            
-            def limpiar_ubicacion(u):
-                u_str = str(u).upper()
-                if "SIBAT" in u_str: return "Equipos Sibate"
-                if "0348" in u_str: return "IDU 0348 GRUPO 4"
-                if "0351" in u_str: return "IDU 0351 GRUPO 7"
-                return "OTRA UBICACIÓN"
-                
             df_ubi['Ubicación Equipo'] = df_ubi['UBICACIÓN_RAW'].apply(limpiar_ubicacion)
             df_ubi = df_ubi.drop_duplicates('Cod Equipo', keep='last')
         else:
             df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN_RAW', 'Ubicación Equipo'])
 
-        if 'Ubicación Equipo' in df_base.columns: df_base.drop(columns=['Ubicación Equipo'], inplace=True)
-        if 'Ubicación Equipo' in df_fallas.columns: df_fallas.drop(columns=['Ubicación Equipo'], inplace=True)
-        if 'COMPONENTE' in df_base.columns: df_base.drop(columns=['COMPONENTE'], inplace=True)
-
-        # Cruzar Repuestos (Recibe la versión estricta mapeada)
-        df_base = pd.merge(df_base, df_ubi[['Cod Equipo', 'Ubicación Equipo']], on='Cod Equipo', how='left')
+        # Cruzar Novedades con la Ubicación limpia del archivo de Estados
+        df_fallas = pd.merge(df_fallas, df_ubi[['Cod Equipo', 'Ubicación Equipo']], on='Cod Equipo', how='left')
         
-        # Cruzar Novedades (Recibe la versión cruda original)
-        df_fallas = pd.merge(df_fallas, df_ubi[['Cod Equipo', 'UBICACIÓN_RAW']], on='Cod Equipo', how='left')
-        df_fallas.rename(columns={'UBICACIÓN_RAW': 'Ubicación Equipo'}, inplace=True)
-        
+        # Cruzar Repuestos para traerles solo el COMPONENTE (si lo hay) de Novedades
         df_comp = df_fallas[['Cod Equipo', 'COMPONENTE']].drop_duplicates('Cod Equipo', keep='last') if not df_fallas.empty else pd.DataFrame(columns=['Cod Equipo','COMPONENTE'])
         df_base = pd.merge(df_base, df_comp, on='Cod Equipo', how='left')
 
-        df_base['Ubicación Equipo'] = df_base['Ubicación Equipo'].fillna('SIN DATO')
         df_base['COMPONENTE'] = df_base['COMPONENTE'].fillna('SIN DATO')
         df_fallas['Ubicación Equipo'] = df_fallas['Ubicación Equipo'].fillna('SIN DATO')
 
@@ -231,10 +231,8 @@ if df_pedidos is not None:
         
         t1, t2, t3, t4 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES"])
         
-        # AQUI AGREGAMOS "Ubicación Equipo" A LAS COLUMNAS VISIBLES DE LA TABLA
         cols_v = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Ubicación Equipo', 'Días en Almacén']
         
-        # AQUI LE DAMOS FORMATO VISUAL A ESA COLUMNA
         cfg = {"Sel": st.column_config.CheckboxColumn(width="small"), 
                "Ejecucion_Obra": st.column_config.CheckboxColumn("🏗️ En Obra", width="small"),
                "Prioridad": st.column_config.TextColumn(width="small"), 
