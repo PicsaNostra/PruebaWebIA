@@ -134,8 +134,9 @@ if df_pedidos is not None:
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
         
+        # NUEVO: Filtro actualizado para la columna 4 (UBICACIÓN en PEDIDOS.xlsx) buscando las 3 obras
         mask = (~df_pedidos['Producto'].str.contains('|'.join(excluir), case=False, na=False)) & \
-               (df_pedidos.iloc[:, 4].astype(str).str.contains("Bogotá", case=False, na=False)) & \
+               (df_pedidos.iloc[:, 4].astype(str).str.contains("SIBAT|0348|0351", case=False, na=False)) & \
                (~df_pedidos['Cod Equipo'].str.startswith('3')) & (df_pedidos['Cod Equipo'] != "A.C.PM") & \
                (pd.to_numeric(df_pedidos.iloc[:, 11], errors='coerce') > 0) & (df_pedidos['Fecha_Llegada'].notna())
 
@@ -145,7 +146,7 @@ if df_pedidos is not None:
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
 
-        # --- UBICACIONES (SEPARANDO LÓGICA) ---
+        # --- UBICACIONES (ARCHIVO DE ESTADOS) ---
         if df_est is not None and not df_est.empty:
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
             col_eq_est = df_est.columns[0]
@@ -161,7 +162,6 @@ if df_pedidos is not None:
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
             df_ubi['UBICACIÓN_RAW'] = df_ubi['UBICACIÓN_RAW'].astype(str).str.strip()
             
-            # Limpiador estricto SOLAMENTE para los repuestos
             def limpiar_ubicacion(u):
                 u_str = str(u).upper()
                 if "SIBAT" in u_str: return "Equipos Sibate"
@@ -178,11 +178,11 @@ if df_pedidos is not None:
         if 'UBICACIÓN' in df_fallas.columns: df_fallas.drop(columns=['UBICACIÓN'], inplace=True)
         if 'COMPONENTE' in df_base.columns: df_base.drop(columns=['COMPONENTE'], inplace=True)
 
-        # Cruzar Repuestos (Recibe la versión estricta mapeada)
+        # Cruzar Repuestos con la Ubicación limpia
         df_base = pd.merge(df_base, df_ubi[['Cod Equipo', 'UBICACIÓN_REP']], on='Cod Equipo', how='left')
         df_base.rename(columns={'UBICACIÓN_REP': 'UBICACIÓN'}, inplace=True)
         
-        # Cruzar Novedades (Recibe la versión cruda original de la hoja)
+        # Cruzar Novedades con la Ubicación original
         df_fallas = pd.merge(df_fallas, df_ubi[['Cod Equipo', 'UBICACIÓN_RAW']], on='Cod Equipo', how='left')
         df_fallas.rename(columns={'UBICACIÓN_RAW': 'UBICACIÓN'}, inplace=True)
         
@@ -285,7 +285,6 @@ if df_pedidos is not None:
 
         with t4:
             if not df_fview.empty:
-                # --- FILTRO RESTAURADO A SU ESTADO ORIGINAL (NOVEDADES) ---
                 ubicaciones_disponibles = sorted(df_fview['UBICACIÓN'].dropna().unique())
                 filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
                 
