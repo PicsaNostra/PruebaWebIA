@@ -145,7 +145,7 @@ if df_pedidos is not None:
         df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
 
-        # --- UBICACIONES (MAPEO ESTRICTO SOLICITADO) ---
+        # --- UBICACIONES (SEPARANDO LÓGICA) ---
         if df_est is not None and not df_est.empty:
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
             col_eq_est = df_est.columns[0]
@@ -159,8 +159,9 @@ if df_pedidos is not None:
             df_ubi = df_est[[col_eq_est, col_obra]].copy()
             df_ubi.columns = ['Cod Equipo', 'UBICACIÓN_RAW']
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
+            df_ubi['UBICACIÓN_RAW'] = df_ubi['UBICACIÓN_RAW'].astype(str).str.strip()
             
-            # Olvidamos la lectura directa y aplicamos las 3 opciones estrictas
+            # Limpiador estricto SOLAMENTE para los repuestos
             def limpiar_ubicacion(u):
                 u_str = str(u).upper()
                 if "SIBAT" in u_str: return "Equipos Sibate"
@@ -168,19 +169,22 @@ if df_pedidos is not None:
                 if "0351" in u_str: return "IDU 0351 GRUPO 7"
                 return "OTRA UBICACIÓN"
                 
-            df_ubi['UBICACIÓN'] = df_ubi['UBICACIÓN_RAW'].apply(limpiar_ubicacion)
+            df_ubi['UBICACIÓN_REP'] = df_ubi['UBICACIÓN_RAW'].apply(limpiar_ubicacion)
             df_ubi = df_ubi.drop_duplicates('Cod Equipo', keep='last')
-            df_ubi = df_ubi[['Cod Equipo', 'UBICACIÓN']]
         else:
-            df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN'])
+            df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN_RAW', 'UBICACIÓN_REP'])
 
         if 'UBICACIÓN' in df_base.columns: df_base.drop(columns=['UBICACIÓN'], inplace=True)
         if 'UBICACIÓN' in df_fallas.columns: df_fallas.drop(columns=['UBICACIÓN'], inplace=True)
         if 'COMPONENTE' in df_base.columns: df_base.drop(columns=['COMPONENTE'], inplace=True)
 
-        # Cruzar Ubicaciones
-        df_base = pd.merge(df_base, df_ubi, on='Cod Equipo', how='left')
-        df_fallas = pd.merge(df_fallas, df_ubi, on='Cod Equipo', how='left')
+        # Cruzar Repuestos (Recibe la versión estricta mapeada)
+        df_base = pd.merge(df_base, df_ubi[['Cod Equipo', 'UBICACIÓN_REP']], on='Cod Equipo', how='left')
+        df_base.rename(columns={'UBICACIÓN_REP': 'UBICACIÓN'}, inplace=True)
+        
+        # Cruzar Novedades (Recibe la versión cruda original de la hoja)
+        df_fallas = pd.merge(df_fallas, df_ubi[['Cod Equipo', 'UBICACIÓN_RAW']], on='Cod Equipo', how='left')
+        df_fallas.rename(columns={'UBICACIÓN_RAW': 'UBICACIÓN'}, inplace=True)
         
         df_comp = df_fallas[['Cod Equipo', 'COMPONENTE']].drop_duplicates('Cod Equipo', keep='last') if not df_fallas.empty else pd.DataFrame(columns=['Cod Equipo','COMPONENTE'])
         df_base = pd.merge(df_base, df_comp, on='Cod Equipo', how='left')
@@ -281,20 +285,20 @@ if df_pedidos is not None:
 
         with t4:
             if not df_fview.empty:
-                # --- NUEVO FILTRO RESTRINGIDO (SOLO LAS 3 OPCIONES) ---
-                ubicaciones_fijas = ["Equipos Sibate", "IDU 0348 GRUPO 4", "IDU 0351 GRUPO 7"]
-                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_fijas, default=ubicaciones_fijas)
+                # --- FILTRO RESTAURADO A SU ESTADO ORIGINAL (NOVEDADES) ---
+                ubicaciones_disponibles = sorted(df_fview['UBICACIÓN'].dropna().unique())
+                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
                 
-                # Filtrar la tabla a las seleccionadas
-                df_fview_filtrado = df_fview[df_fview['UBICACIÓN'].isin(filtro_ubi)].copy()
+                df_fview_filtrado = df_fview.copy()
+                if filtro_ubi:
+                    df_fview_filtrado = df_fview_filtrado[df_fview_filtrado['UBICACIÓN'].isin(filtro_ubi)]
 
                 if df_fview_filtrado.empty:
-                    st.warning("No hay novedades en las ubicaciones seleccionadas o no has seleccionado ninguna.")
+                    st.warning("No hay novedades en la ubicación seleccionada.")
                 else:
                     with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
                         g1, g2, g3 = st.columns(3)
                         
-                        # Gráfico 1: Ubicación
                         df_ubi_chart = df_fview_filtrado.groupby('UBICACIÓN')['Cod Equipo'].nunique().reset_index(name='Cantidad')
                         chart_ubi = alt.Chart(df_ubi_chart).mark_bar(color="#ff4b4b").encode(
                             x=alt.X('UBICACIÓN:N', sort='-y', title='Ubicación'),
@@ -303,7 +307,6 @@ if df_pedidos is not None:
                         g1.markdown("📍 **Equipos por Ubicación**")
                         g1.altair_chart(chart_ubi, use_container_width=True)
                         
-                        # Gráfico 2: Componente
                         df_comp_chart = df_fview_filtrado.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')
                         chart_comp = alt.Chart(df_comp_chart).mark_bar(color="#1f77b4").encode(
                             x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
@@ -312,7 +315,6 @@ if df_pedidos is not None:
                         g2.markdown("⚙️ **Equipos por Componente**")
                         g2.altair_chart(chart_comp, use_container_width=True)
 
-                        # Gráfico 3: Técnico en Obra
                         df_tec_chart = df_fview_filtrado['Enviar_Tecnico'].value_counts().reset_index()
                         df_tec_chart.columns = ['Estado', 'Cantidad']
                         df_tec_chart['Estado'] = df_tec_chart['Estado'].map({True: 'En Obra', False: 'Taller / Pendiente'})
@@ -323,7 +325,6 @@ if df_pedidos is not None:
                         g3.markdown("👷 **Actividades en Obra**")
                         g3.altair_chart(chart_tec, use_container_width=True)
                     
-                    # Tabla Editable
                     cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'UBICACIÓN']
                     ed_f = st.data_editor(
                         df_fview_filtrado[['Enviar_Tecnico'] + cols_f],
