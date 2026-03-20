@@ -49,7 +49,6 @@ def analizar_datos_sinco(ruta_o_archivo):
         except Exception:
             raise ValueError("Formato de SINCO no soportado.")
 
-    # Limpieza de las columnas originales
     df = df.dropna(subset=['Equipo'])
     df['Fecha vale'] = pd.to_datetime(df['Fecha vale'], errors='coerce', dayfirst=True)
     df = df.dropna(subset=['Fecha vale'])
@@ -57,7 +56,6 @@ def analizar_datos_sinco(ruta_o_archivo):
     # CRUCE INVISIBLE: Creamos una columna temporal solo para cruzar con la plantilla
     df['Codigo_Match'] = df['Equipo'].astype(str).str.split('-').str[0].str.strip()
     
-    # Ordenar y filtrar
     df = df.sort_values(by=['Equipo', 'Fecha vale'], ascending=[True, False])
     
     df_historial = df.copy()
@@ -71,7 +69,11 @@ def analizar_datos_sinco(ruta_o_archivo):
 
 def analizar_datos_plantilla(ruta_o_archivo):
     """Extrae PLANTILLA (Columnas A, Q, R, S)"""
-    df = pd.read_excel(ruta_o_archivo, usecols="A,Q,R,S", header=None)
+    try:
+        df = pd.read_excel(ruta_o_archivo, usecols="A,Q,R,S", header=None)
+    except Exception as e:
+        raise ValueError(f"No se pudieron leer las columnas A, Q, R y S de la Plantilla. Asegúrate de que el Excel tenga datos en esas columnas. Detalle: {e}")
+
     df.columns = ["Codigo_Match", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
     
     df = df.dropna(subset=['Codigo_Match'])
@@ -102,31 +104,32 @@ varados_guardados = cargar_varados()
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("1. Reporte SINCO")
-    archivo_sinco = st.file_uploader("Subir SINCO (.xlsx)", type=["xlsx", "xls", "csv"])
+    archivo_sinco = st.file_uploader("Subir SINCO (.xlsx)", type=["xlsx", "xls", "csv"], key="uploader_sinco")
     ruta_sinco = obtener_ruta_guardada("sinco")
     
     if archivo_sinco:
-        # VALIDACIÓN EXACTA DEL NOMBRE DEL ARCHIVO
         if "SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ" not in archivo_sinco.name:
             st.warning(f"⚠️ El archivo subido se llama '{archivo_sinco.name}'. Asegúrate de que sea el reporte 'SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ'.")
             
-        with open(os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx"), "wb") as f:
+        ruta_sinco = os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx")
+        with open(ruta_sinco, "wb") as f:
             f.write(archivo_sinco.getbuffer())
-        st.rerun()
-    if ruta_sinco:
-        st.success("✅ SINCO Cargado")
+        st.success("✅ Archivo SINCO recién cargado")
+    elif ruta_sinco:
+        st.success("✅ SINCO guardado en memoria")
 
 with c2:
     st.subheader("2. Plantilla Maestra")
-    archivo_plantilla = st.file_uploader("Subir PLANTILLA (.xlsx)", type=["xlsx"])
+    archivo_plantilla = st.file_uploader("Subir PLANTILLA (.xlsx)", type=["xlsx"], key="uploader_plantilla")
     ruta_plantilla = obtener_ruta_guardada("plantilla")
     
     if archivo_plantilla:
-        with open(os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx"), "wb") as f:
+        ruta_plantilla = os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx")
+        with open(ruta_plantilla, "wb") as f:
             f.write(archivo_plantilla.getbuffer())
-        st.rerun()
-    if ruta_plantilla:
-        st.success("✅ PLANTILLA Cargada")
+        st.success("✅ Archivo PLANTILLA recién cargado")
+    elif ruta_plantilla:
+        st.success("✅ PLANTILLA guardada en memoria")
     else:
         st.warning("⚠️ Sin PLANTILLA (Las columnas de Mtto estarán vacías)")
 
@@ -208,7 +211,6 @@ if ruta_sinco:
                 
                 if ruta_plantilla:
                     df_plan = analizar_datos_plantilla(ruta_plantilla)
-                    # Buscar usando el Codigo_Match del equipo seleccionado
                     cod_match = eq_sel.split('-')[0].strip()
                     info_p = df_plan[df_plan['Codigo_Match'] == cod_match]
                     
@@ -218,4 +220,4 @@ if ruta_sinco:
                         c_b.metric("Fecha Último Mtto", info_p.iloc[0]['Fecha_Mtto'].strftime('%d/%m/%Y') if pd.notna(info_p.iloc[0]['Fecha_Mtto']) else "N/A")
 
     except Exception as e:
-        st.error(f"Error procesando datos: {e}")
+        st.error(f"❌ Error procesando los datos: {e}")
