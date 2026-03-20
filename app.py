@@ -37,24 +37,27 @@ def limpiar_archivos_viejos():
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 def analizar_datos_sinco(ruta_o_archivo):
-    """Extrae y limpia SINCO"""
+    """Extrae y limpia SINCO exactamente como se pidió al inicio"""
     try:
         df = pd.read_excel(ruta_o_archivo, skiprows=3, usecols="A,F,H,I")
-        df.columns = ["Equipo_Bruto", "Fecha vale", "km Equipo", "hr Equipo"]
+        df.columns = ["Equipo", "Fecha vale", "km Equipo", "hr Equipo"]
     except Exception:
         try:
             df = pd.read_csv(ruta_o_archivo, sep='\t', skiprows=3, encoding='latin-1')
             df = df.iloc[:, [0, 5, 7, 8]]
-            df.columns = ["Equipo_Bruto", "Fecha vale", "km Equipo", "hr Equipo"]
+            df.columns = ["Equipo", "Fecha vale", "km Equipo", "hr Equipo"]
         except Exception:
             raise ValueError("Formato de SINCO no soportado.")
 
-    df = df.dropna(subset=['Equipo_Bruto'])
-    df['Equipo'] = df['Equipo_Bruto'].astype(str).str.split('-').str[0].str.strip()
+    # Limpieza de las columnas originales
+    df = df.dropna(subset=['Equipo'])
     df['Fecha vale'] = pd.to_datetime(df['Fecha vale'], errors='coerce', dayfirst=True)
     df = df.dropna(subset=['Fecha vale'])
     
-    # Ordenar por equipo y fecha más reciente (SINCO)
+    # CRUCE INVISIBLE: Creamos una columna temporal solo para cruzar con la plantilla
+    df['Codigo_Match'] = df['Equipo'].astype(str).str.split('-').str[0].str.strip()
+    
+    # Ordenar y filtrar
     df = df.sort_values(by=['Equipo', 'Fecha vale'], ascending=[True, False])
     
     df_historial = df.copy()
@@ -67,40 +70,30 @@ def analizar_datos_sinco(ruta_o_archivo):
     return alertas, df_historial
 
 def analizar_datos_plantilla(ruta_o_archivo):
-    """Extrae PLANTILLA (Columnas A, Q, R, S) extrayendo siempre el Mtto. más reciente"""
+    """Extrae PLANTILLA (Columnas A, Q, R, S)"""
     df = pd.read_excel(ruta_o_archivo, usecols="A,Q,R,S", header=None)
-    df.columns = ["Equipo_Cod", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
+    df.columns = ["Codigo_Match", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
     
-    df = df.dropna(subset=['Equipo_Cod'])
-    df['Equipo'] = df['Equipo_Cod'].astype(str).str.strip()
+    df = df.dropna(subset=['Codigo_Match'])
+    df['Codigo_Match'] = df['Codigo_Match'].astype(str).str.strip()
     
     df['hr_Mtto'] = pd.to_numeric(df['hr_Mtto'], errors='coerce')
     df['km_Mtto'] = pd.to_numeric(df['km_Mtto'], errors='coerce')
-    
-    # Convertimos la fecha (Maneja formatos extraños en Excel)
     df['Fecha_Mtto'] = pd.to_datetime(df['Fecha_Mtto'], errors='coerce')
     
-    # 🚀 SOLUCIÓN AL ERROR 1970: 
-    # Convertimos cualquier fecha del año 1970 o inferior a un valor vacío (NaT)
     df.loc[df['Fecha_Mtto'].dt.year <= 1970, 'Fecha_Mtto'] = pd.NaT
+    df = df[df['Codigo_Match'].str.lower() != 'equipo']
     
-    # Eliminamos encabezados que se hayan colado
-    df = df[df['Equipo'].str.lower() != 'equipo']
+    df = df.sort_values(by=['Codigo_Match', 'Fecha_Mtto'], ascending=[True, False])
+    df = df.drop_duplicates(subset=['Codigo_Match'], keep='first')
     
-    # 🚀 SOLUCIÓN A DATOS MÁS NUEVOS:
-    # 1. Ordenamos por Equipo (A-Z) y por Fecha de Mantenimiento (De la más nueva a la más vieja)
-    df = df.sort_values(by=['Equipo', 'Fecha_Mtto'], ascending=[True, False])
-    
-    # 2. Eliminamos duplicados quedándonos únicamente con la PRIMERA fila (la fecha más nueva)
-    df = df.drop_duplicates(subset=['Equipo'], keep='first')
-    
-    return df[['Equipo', 'hr_Mtto', 'km_Mtto', 'Fecha_Mtto']]
+    return df[['Codigo_Match', 'hr_Mtto', 'km_Mtto', 'Fecha_Mtto']]
 
 limpiar_archivos_viejos()
 
 # --- 3. INTERFAZ ---
 st.title("🚜 Auditoría de Mantenimiento Preventivo")
-st.write("Cruce de datos de Operación (SINCO) vs. Último Mantenimiento (PLANTILLA).")
+st.write("Cruce exacto de datos de SINCO vs. Último Mantenimiento (PLANTILLA).")
 st.divider()
 
 varados_guardados = cargar_varados()
@@ -111,7 +104,12 @@ with c1:
     st.subheader("1. Reporte SINCO")
     archivo_sinco = st.file_uploader("Subir SINCO (.xlsx)", type=["xlsx", "xls", "csv"])
     ruta_sinco = obtener_ruta_guardada("sinco")
+    
     if archivo_sinco:
+        # VALIDACIÓN EXACTA DEL NOMBRE DEL ARCHIVO
+        if "SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ" not in archivo_sinco.name:
+            st.warning(f"⚠️ El archivo subido se llama '{archivo_sinco.name}'. Asegúrate de que sea el reporte 'SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ'.")
+            
         with open(os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx"), "wb") as f:
             f.write(archivo_sinco.getbuffer())
         st.rerun()
@@ -122,6 +120,7 @@ with c2:
     st.subheader("2. Plantilla Maestra")
     archivo_plantilla = st.file_uploader("Subir PLANTILLA (.xlsx)", type=["xlsx"])
     ruta_plantilla = obtener_ruta_guardada("plantilla")
+    
     if archivo_plantilla:
         with open(os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx"), "wb") as f:
             f.write(archivo_plantilla.getbuffer())
@@ -137,23 +136,22 @@ if ruta_sinco:
         df_alertas, df_historial = analizar_datos_sinco(ruta_sinco)
         df_maestro = df_alertas.copy()
 
-        # Cruce de datos
+        # Cruce de datos usando el Codigo_Match invisible
         if ruta_plantilla:
             df_plan = analizar_datos_plantilla(ruta_plantilla)
-            df_maestro = pd.merge(df_maestro, df_plan, on='Equipo', how='left')
+            df_maestro = pd.merge(df_maestro, df_plan, on='Codigo_Match', how='left')
         else:
             df_maestro['hr_Mtto'] = pd.NA
             df_maestro['km_Mtto'] = pd.NA
             df_maestro['Fecha_Mtto'] = pd.NaT
 
         st.divider()
-        busqueda = st.text_input("🔍 Buscar equipo por código:")
+        busqueda = st.text_input("🔍 Buscar equipo (Escribe parte del nombre o código):")
         
         df_maestro['¿Varado?'] = df_maestro['Equipo'].isin(varados_guardados)
         if busqueda:
             df_maestro = df_maestro[df_maestro['Equipo'].str.contains(busqueda, case=False, na=False)]
         
-        # Columnas organizadas
         columnas_ordenadas = [
             "¿Varado?", "Equipo", "Fecha vale", "Días sin actualizar", 
             "hr Equipo", "hr_Mtto", "km Equipo", "km_Mtto", "Fecha_Mtto"
@@ -166,7 +164,7 @@ if ruta_sinco:
         
         config_columnas = {
             "¿Varado?": st.column_config.CheckboxColumn("🔧", help="Marcar/Desmarcar"),
-            "Equipo": st.column_config.TextColumn("Código Equipo"),
+            "Equipo": st.column_config.TextColumn("Equipo (SINCO)"),
             "Fecha vale": st.column_config.DateColumn("Últ. Reporte (SINCO)", format="DD/MM/YYYY"),
             "Días sin actualizar": st.column_config.NumberColumn("Días Atraso", format="%d 🔴"),
             "hr Equipo": st.column_config.NumberColumn("hr (SINCO)"),
@@ -210,7 +208,10 @@ if ruta_sinco:
                 
                 if ruta_plantilla:
                     df_plan = analizar_datos_plantilla(ruta_plantilla)
-                    info_p = df_plan[df_plan['Equipo'] == eq_sel]
+                    # Buscar usando el Codigo_Match del equipo seleccionado
+                    cod_match = eq_sel.split('-')[0].strip()
+                    info_p = df_plan[df_plan['Codigo_Match'] == cod_match]
+                    
                     if not info_p.empty:
                         c_a, c_b = st.columns(2)
                         c_a.metric("Último Mtto (hr)", f"{info_p.iloc[0]['hr_Mtto']:,}" if pd.notna(info_p.iloc[0]['hr_Mtto']) else "N/A")
