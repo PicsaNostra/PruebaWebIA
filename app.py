@@ -53,6 +53,8 @@ def analizar_datos_sinco(ruta_o_archivo):
     df['Equipo'] = df['Equipo_Bruto'].astype(str).str.split('-').str[0].str.strip()
     df['Fecha vale'] = pd.to_datetime(df['Fecha vale'], errors='coerce', dayfirst=True)
     df = df.dropna(subset=['Fecha vale'])
+    
+    # Ordenar por equipo y fecha más reciente (SINCO)
     df = df.sort_values(by=['Equipo', 'Fecha vale'], ascending=[True, False])
     
     df_historial = df.copy()
@@ -65,7 +67,7 @@ def analizar_datos_sinco(ruta_o_archivo):
     return alertas, df_historial
 
 def analizar_datos_plantilla(ruta_o_archivo):
-    """Extrae PLANTILLA (Columnas A, Q, R, S)"""
+    """Extrae PLANTILLA (Columnas A, Q, R, S) extrayendo siempre el Mtto. más reciente"""
     df = pd.read_excel(ruta_o_archivo, usecols="A,Q,R,S", header=None)
     df.columns = ["Equipo_Cod", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
     
@@ -74,10 +76,23 @@ def analizar_datos_plantilla(ruta_o_archivo):
     
     df['hr_Mtto'] = pd.to_numeric(df['hr_Mtto'], errors='coerce')
     df['km_Mtto'] = pd.to_numeric(df['km_Mtto'], errors='coerce')
+    
+    # Convertimos la fecha (Maneja formatos extraños en Excel)
     df['Fecha_Mtto'] = pd.to_datetime(df['Fecha_Mtto'], errors='coerce')
     
+    # 🚀 SOLUCIÓN AL ERROR 1970: 
+    # Convertimos cualquier fecha del año 1970 o inferior a un valor vacío (NaT)
+    df.loc[df['Fecha_Mtto'].dt.year <= 1970, 'Fecha_Mtto'] = pd.NaT
+    
+    # Eliminamos encabezados que se hayan colado
     df = df[df['Equipo'].str.lower() != 'equipo']
-    df = df.drop_duplicates(subset=['Equipo'], keep='last')
+    
+    # 🚀 SOLUCIÓN A DATOS MÁS NUEVOS:
+    # 1. Ordenamos por Equipo (A-Z) y por Fecha de Mantenimiento (De la más nueva a la más vieja)
+    df = df.sort_values(by=['Equipo', 'Fecha_Mtto'], ascending=[True, False])
+    
+    # 2. Eliminamos duplicados quedándonos únicamente con la PRIMERA fila (la fecha más nueva)
+    df = df.drop_duplicates(subset=['Equipo'], keep='first')
     
     return df[['Equipo', 'hr_Mtto', 'km_Mtto', 'Fecha_Mtto']]
 
@@ -122,7 +137,7 @@ if ruta_sinco:
         df_alertas, df_historial = analizar_datos_sinco(ruta_sinco)
         df_maestro = df_alertas.copy()
 
-        # Si hay plantilla, hacemos el cruce. Si no, creamos las columnas vacías a la fuerza.
+        # Cruce de datos
         if ruta_plantilla:
             df_plan = analizar_datos_plantilla(ruta_plantilla)
             df_maestro = pd.merge(df_maestro, df_plan, on='Equipo', how='left')
@@ -138,7 +153,7 @@ if ruta_sinco:
         if busqueda:
             df_maestro = df_maestro[df_maestro['Equipo'].str.contains(busqueda, case=False, na=False)]
         
-        # ORDENAMOS EXACTAMENTE CÓMO QUEREMOS VER LAS COLUMNAS EN PANTALLA
+        # Columnas organizadas
         columnas_ordenadas = [
             "¿Varado?", "Equipo", "Fecha vale", "Días sin actualizar", 
             "hr Equipo", "hr_Mtto", "km Equipo", "km_Mtto", "Fecha_Mtto"
@@ -149,7 +164,6 @@ if ruta_sinco:
 
         t1, t2 = st.tabs(["🚨 Alertas Críticas", "🔧 Equipos en Taller"])
         
-        # Configuración visual de cada columna
         config_columnas = {
             "¿Varado?": st.column_config.CheckboxColumn("🔧", help="Marcar/Desmarcar"),
             "Equipo": st.column_config.TextColumn("Código Equipo"),
@@ -162,7 +176,6 @@ if ruta_sinco:
             "Fecha_Mtto": st.column_config.DateColumn("Fecha Mtto (PLANTILLA)", format="DD/MM/YYYY")
         }
 
-        # Bloqueamos todas las columnas excepto el Checkbox de "Varado"
         columnas_bloqueadas = [col for col in columnas_ordenadas if col != "¿Varado?"]
 
         with t1:
@@ -195,7 +208,6 @@ if ruta_sinco:
                 hist['Pico Horas'] = hist['hr Equipo'].diff()
                 st.bar_chart(hist.dropna(subset=['Pico Horas']).set_index('Fecha vale')['Pico Horas'])
                 
-                # Mostrar datos de plantilla si existen
                 if ruta_plantilla:
                     df_plan = analizar_datos_plantilla(ruta_plantilla)
                     info_p = df_plan[df_plan['Equipo'] == eq_sel]
