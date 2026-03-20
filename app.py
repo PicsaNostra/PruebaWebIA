@@ -68,12 +68,14 @@ def analizar_datos_sinco(ruta_o_archivo):
     return alertas, df_historial
 
 def analizar_datos_plantilla(ruta_o_archivo):
-    """Extrae PLANTILLA (Columnas A, Q, R, S)"""
-    try:
-        df = pd.read_excel(ruta_o_archivo, usecols="A,Q,R,S", header=None)
-    except Exception as e:
-        raise ValueError(f"No se pudieron leer las columnas A, Q, R y S de la Plantilla. Asegúrate de que el Excel tenga datos en esas columnas. Detalle: {e}")
-
+    """Extrae PLANTILLA a prueba de fallos y sin crasheos"""
+    df_full = pd.read_excel(ruta_o_archivo, header=None)
+    
+    # Rellena columnas vacías si la tabla es muy corta
+    while df_full.shape[1] <= 18:
+        df_full[df_full.shape[1]] = pd.NA
+        
+    df = df_full.iloc[:, [0, 16, 17, 18]].copy()
     df.columns = ["Codigo_Match", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
     
     df = df.dropna(subset=['Codigo_Match'])
@@ -84,7 +86,7 @@ def analizar_datos_plantilla(ruta_o_archivo):
     df['Fecha_Mtto'] = pd.to_datetime(df['Fecha_Mtto'], errors='coerce')
     
     df.loc[df['Fecha_Mtto'].dt.year <= 1970, 'Fecha_Mtto'] = pd.NaT
-    df = df[df['Codigo_Match'].str.lower() != 'equipo']
+    df = df[~df['Codigo_Match'].str.lower().isin(['equipo', 'codigo', 'código'])]
     
     df = df.sort_values(by=['Codigo_Match', 'Fecha_Mtto'], ascending=[True, False])
     df = df.drop_duplicates(subset=['Codigo_Match'], keep='first')
@@ -94,55 +96,61 @@ def analizar_datos_plantilla(ruta_o_archivo):
 limpiar_archivos_viejos()
 
 # --- 3. INTERFAZ ---
-st.title("🚜 Auditoría de Mantenimiento Preventivo")
-st.write("Cruce exacto de datos de SINCO vs. Último Mantenimiento (PLANTILLA).")
-st.divider()
-
 varados_guardados = cargar_varados()
 
-# Carga de archivos
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("1. Reporte SINCO")
-    archivo_sinco = st.file_uploader("Subir SINCO (.xlsx)", type=["xlsx", "xls", "csv"], key="uploader_sinco")
-    ruta_sinco = obtener_ruta_guardada("sinco")
-    
-    if archivo_sinco:
-        if "SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ" not in archivo_sinco.name:
-            st.warning(f"⚠️ El archivo subido se llama '{archivo_sinco.name}'. Asegúrate de que sea el reporte 'SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ'.")
-            
-        ruta_sinco = os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx")
-        with open(ruta_sinco, "wb") as f:
-            f.write(archivo_sinco.getbuffer())
-        st.success("✅ Archivo SINCO recién cargado")
-    elif ruta_sinco:
-        st.success("✅ SINCO guardado en memoria")
+# ==========================================
+# SECCIÓN 1: PLANTILLA (BARRA LATERAL)
+# ==========================================
+st.sidebar.title("⚙️ Base de Datos Maestra")
+st.sidebar.info("Sube aquí el archivo PLANTILLA. Se quedará guardado temporalmente para cruzarlo con tus reportes diarios.")
 
-with c2:
-    st.subheader("2. Plantilla Maestra")
-    archivo_plantilla = st.file_uploader("Subir PLANTILLA (.xlsx)", type=["xlsx"], key="uploader_plantilla")
-    ruta_plantilla = obtener_ruta_guardada("plantilla")
-    
-    if archivo_plantilla:
-        ruta_plantilla = os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx")
-        with open(ruta_plantilla, "wb") as f:
-            f.write(archivo_plantilla.getbuffer())
-        st.success("✅ Archivo PLANTILLA recién cargado")
-    elif ruta_plantilla:
-        st.success("✅ PLANTILLA guardada en memoria")
-    else:
-        st.warning("⚠️ Sin PLANTILLA (Las columnas de Mtto estarán vacías)")
+# El parámetro "key" separa esta subida de la del centro
+archivo_plantilla = st.sidebar.file_uploader("📥 Subir PLANTILLA (.xlsx)", type=["xlsx"], key="up_plantilla")
+if archivo_plantilla:
+    with open(os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx"), "wb") as f:
+        f.write(archivo_plantilla.getbuffer())
+    st.sidebar.success("✅ Archivo PLANTILLA guardado.")
 
-# Procesamiento
+ruta_plantilla = obtener_ruta_guardada("plantilla")
+if ruta_plantilla:
+    st.sidebar.success("📂 PLANTILLA activa en memoria")
+else:
+    st.sidebar.warning("⚠️ Faltan datos de Mantenimiento")
+
+
+# ==========================================
+# SECCIÓN 2: SINCO (PANTALLA PRINCIPAL)
+# ==========================================
+st.title("🚜 Auditoría de Mantenimiento Preventivo")
+st.write("Sube tu reporte diario de operación para detectar equipos atrasados y comparar con el taller.")
+st.divider()
+
+# El parámetro "key" asegura que no choque con la plantilla
+archivo_sinco = st.file_uploader("📥 Subir reporte diario SINCO (.xlsx)", type=["xlsx", "xls", "csv"], key="up_sinco")
+if archivo_sinco:
+    if "SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ" not in archivo_sinco.name:
+        st.warning(f"⚠️ Atención: El archivo se llama '{archivo_sinco.name}'. Asegúrate de usar el reporte oficial.")
+    with open(os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx"), "wb") as f:
+        f.write(archivo_sinco.getbuffer())
+
+ruta_sinco = obtener_ruta_guardada("sinco")
+
+# --- 4. PROCESAMIENTO PRINCIPAL ---
 if ruta_sinco:
     try:
         df_alertas, df_historial = analizar_datos_sinco(ruta_sinco)
         df_maestro = df_alertas.copy()
 
-        # Cruce de datos usando el Codigo_Match invisible
+        # Cruce de datos seguro
         if ruta_plantilla:
-            df_plan = analizar_datos_plantilla(ruta_plantilla)
-            df_maestro = pd.merge(df_maestro, df_plan, on='Codigo_Match', how='left')
+            try:
+                df_plan = analizar_datos_plantilla(ruta_plantilla)
+                df_maestro = pd.merge(df_maestro, df_plan, on='Codigo_Match', how='left')
+            except Exception as e:
+                st.error(f"⚠️ Hubo un problema técnico al leer la plantilla: {e}")
+                df_maestro['hr_Mtto'] = pd.NA
+                df_maestro['km_Mtto'] = pd.NA
+                df_maestro['Fecha_Mtto'] = pd.NaT
         else:
             df_maestro['hr_Mtto'] = pd.NA
             df_maestro['km_Mtto'] = pd.NA
@@ -186,7 +194,7 @@ if ruta_sinco:
                 if marcados:
                     guardar_varados(list(set(varados_guardados + marcados)))
                     st.rerun()
-            else: st.success("Sin alertas.")
+            else: st.success("✅ Sin alertas activas.")
 
         with t2:
             if not df_varados.empty:
@@ -210,14 +218,20 @@ if ruta_sinco:
                 st.bar_chart(hist.dropna(subset=['Pico Horas']).set_index('Fecha vale')['Pico Horas'])
                 
                 if ruta_plantilla:
-                    df_plan = analizar_datos_plantilla(ruta_plantilla)
-                    cod_match = eq_sel.split('-')[0].strip()
-                    info_p = df_plan[df_plan['Codigo_Match'] == cod_match]
-                    
-                    if not info_p.empty:
-                        c_a, c_b = st.columns(2)
-                        c_a.metric("Último Mtto (hr)", f"{info_p.iloc[0]['hr_Mtto']:,}" if pd.notna(info_p.iloc[0]['hr_Mtto']) else "N/A")
-                        c_b.metric("Fecha Último Mtto", info_p.iloc[0]['Fecha_Mtto'].strftime('%d/%m/%Y') if pd.notna(info_p.iloc[0]['Fecha_Mtto']) else "N/A")
+                    try:
+                        df_plan = analizar_datos_plantilla(ruta_plantilla)
+                        cod_match = eq_sel.split('-')[0].strip()
+                        info_p = df_plan[df_plan['Codigo_Match'] == cod_match]
+                        
+                        if not info_p.empty:
+                            c_a, c_b = st.columns(2)
+                            c_a.metric("Último Mtto (hr)", f"{info_p.iloc[0]['hr_Mtto']:,}" if pd.notna(info_p.iloc[0]['hr_Mtto']) else "N/A")
+                            c_b.metric("Fecha Último Mtto", info_p.iloc[0]['Fecha_Mtto'].strftime('%d/%m/%Y') if pd.notna(info_p.iloc[0]['Fecha_Mtto']) else "N/A")
+                    except: pass
+            else:
+                st.warning("No hay suficientes datos históricos para este equipo.")
 
     except Exception as e:
-        st.error(f"❌ Error procesando los datos: {e}")
+        st.error(f"❌ Error crítico procesando los datos: {e}")
+else:
+    st.info("💡 Por favor, sube el reporte diario SINCO en el recuadro de arriba para comenzar.")
