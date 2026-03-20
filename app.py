@@ -1,237 +1,352 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import os
-import time
-import glob
+import io, requests
+from github import Github
+import altair as alt
 
-# --- 1. CONFIGURACIÓN INICIAL ---
-st.set_page_config(page_title="Auditoría de Mantenimiento", page_icon="🚜", layout="wide")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="Gestor Repuestos Pro", layout="wide", page_icon="🛠️")
 
-CARPETA_TEMP = "temp_datos"
-if not os.path.exists(CARPETA_TEMP):
-    os.makedirs(CARPETA_TEMP)
+REPO_DATOS = "PicsaNostra/DatosRepuestos" 
+ARCHIVO_EXCEL = "PEDIDOS.xlsx"
+ARCHIVO_ESTADOS = "ESTADOS%20DE%20EQUIPOS.xlsx" 
+ARCHIVO_CSV = "datos_gestion.csv"
+ARCHIVO_CSV_FALLAS = "fallas_gestion.csv" 
+RAMA = "main"
+URL_FALLAS = "https://docs.google.com/spreadsheets/d/1o22GZKmqCmuABGaR1nyLe2jCMBti7cWJtv38wvgH0PQ/export?format=csv&gid=0"
 
-ARCHIVO_VARADOS = os.path.join(CARPETA_TEMP, "equipos_varados.csv")
+# --- 2. CONEXIONES ---
+def obtener_token():
+    if "GITHUB_TOKEN" not in st.secrets:
+        st.error("❌ Falta el Token en Secrets.")
+        st.stop()
+    return st.secrets["GITHUB_TOKEN"]
 
-def obtener_ruta_guardada(prefijo):
-    archivos = glob.glob(os.path.join(CARPETA_TEMP, f"{prefijo}_ultimo.*"))
-    return archivos[0] if archivos else None
-
-def cargar_varados():
-    if os.path.exists(ARCHIVO_VARADOS):
-        return pd.read_csv(ARCHIVO_VARADOS)['Equipo'].tolist()
-    return []
-
-def guardar_varados(lista_equipos):
-    df_var = pd.DataFrame({'Equipo': lista_equipos})
-    df_var.to_csv(ARCHIVO_VARADOS, index=False)
-
-def limpiar_archivos_viejos():
-    archivos = glob.glob(os.path.join(CARPETA_TEMP, "*_ultimo.*"))
-    tiempo_actual = time.time()
-    for ruta in archivos:
-        if os.path.exists(ruta):
-            if (tiempo_actual - os.path.getmtime(ruta)) > 86400:
-                os.remove(ruta)
-
-# --- 2. LÓGICA DE PROCESAMIENTO ---
-def analizar_datos_sinco(ruta_o_archivo):
-    """Extrae y limpia SINCO exactamente como se pidió al inicio"""
+def obtener_repo_privado():
     try:
-        df = pd.read_excel(ruta_o_archivo, skiprows=3, usecols="A,F,H,I")
-        df.columns = ["Equipo", "Fecha vale", "km Equipo", "hr Equipo"]
-    except Exception:
-        try:
-            df = pd.read_csv(ruta_o_archivo, sep='\t', skiprows=3, encoding='latin-1')
-            df = df.iloc[:, [0, 5, 7, 8]]
-            df.columns = ["Equipo", "Fecha vale", "km Equipo", "hr Equipo"]
-        except Exception:
-            raise ValueError("Formato de SINCO no soportado.")
+        return Github(obtener_token()).get_repo(REPO_DATOS)
+    except: return None
 
-    df = df.dropna(subset=['Equipo'])
-    df['Fecha vale'] = pd.to_datetime(df['Fecha vale'], errors='coerce', dayfirst=True)
-    df = df.dropna(subset=['Fecha vale'])
-    
-    # CRUCE INVISIBLE: Creamos una columna temporal solo para cruzar con la plantilla
-    df['Codigo_Match'] = df['Equipo'].astype(str).str.split('-').str[0].str.strip()
-    
-    df = df.sort_values(by=['Equipo', 'Fecha vale'], ascending=[True, False])
-    
-    df_historial = df.copy()
-    df = df.drop_duplicates(subset=['Equipo'], keep='first').copy()
-    
-    hoy = pd.Timestamp(datetime.today().date())
-    df['Días sin actualizar'] = (hoy - df['Fecha vale']).dt.days
-    alertas = df[df['Días sin actualizar'] >= 3].copy()
-    
-    return alertas, df_historial
+@st.cache_data(ttl=600)
+def cargar_excel():
+    url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_EXCEL}"
+    headers = {"Authorization": f"token {obtener_token()}", "Accept": "application/vnd.github.v3.raw"}
+    res = requests.get(url, headers=headers)
+    return pd.read_excel(io.BytesIO(res.content), engine='openpyxl') if res.status_code == 200 else None
 
-def analizar_datos_plantilla(ruta_o_archivo):
-    """Extrae PLANTILLA a prueba de fallos y sin crasheos"""
-    df_full = pd.read_excel(ruta_o_archivo, header=None)
-    
-    # Rellena columnas vacías si la tabla es muy corta
-    while df_full.shape[1] <= 18:
-        df_full[df_full.shape[1]] = pd.NA
+@st.cache_data(ttl=600)
+def cargar_estados():
+    url = f"https://raw.githubusercontent.com/{REPO_DATOS}/{RAMA}/{ARCHIVO_ESTADOS}"
+    headers = {"Authorization": f"token {obtener_token()}", "Accept": "application/vnd.github.v3.raw"}
+    res = requests.get(url, headers=headers)
+    if res.status_code == 200:
+        return pd.read_excel(io.BytesIO(res.content), sheet_name="INFORMACIÓN EDITABLE", engine='openpyxl')
+    return None
+
+def cargar_memoria():
+    repo = obtener_repo_privado()
+    df_vacio = pd.DataFrame(columns=['ID_Unico', 'Estado', 'Fecha_Prog', 'Ejecucion_Obra'])
+    if not repo: return df_vacio
+    try:
+        df = pd.read_csv(io.BytesIO(repo.get_contents(ARCHIVO_CSV).decoded_content))
+        if 'Ejecucion_Obra' not in df.columns: df['Ejecucion_Obra'] = False
+        df['Ejecucion_Obra'] = df['Ejecucion_Obra'].fillna(False).astype(bool)
+        return df
+    except: return df_vacio
+
+def cargar_memoria_fallas():
+    repo = obtener_repo_privado()
+    df_vacio = pd.DataFrame(columns=['ID_Falla', 'Enviar_Tecnico'])
+    if not repo: return df_vacio
+    try:
+        df = pd.read_csv(io.BytesIO(repo.get_contents(ARCHIVO_CSV_FALLAS).decoded_content))
+        df['Enviar_Tecnico'] = df['Enviar_Tecnico'].fillna(False).astype(bool)
+        return df
+    except: return df_vacio
+
+@st.cache_data(ttl=300)
+def cargar_fallas():
+    df_v = pd.DataFrame(columns=['Cod Equipo', 'COMPONENTE', 'Estado Falla', 'Falla'])
+    try:
+        df = pd.read_csv(URL_FALLAS)
+        df.columns = df.columns.astype(str).str.strip().str.upper()
+        col_cod = 'CÓD' if 'CÓD' in df.columns else ('COD' if 'COD' in df.columns else None)
         
-    df = df_full.iloc[:, [0, 16, 17, 18]].copy()
-    df.columns = ["Codigo_Match", "hr_Mtto", "km_Mtto", "Fecha_Mtto"]
-    
-    df = df.dropna(subset=['Codigo_Match'])
-    df['Codigo_Match'] = df['Codigo_Match'].astype(str).str.strip()
-    
-    df['hr_Mtto'] = pd.to_numeric(df['hr_Mtto'], errors='coerce')
-    df['km_Mtto'] = pd.to_numeric(df['km_Mtto'], errors='coerce')
-    df['Fecha_Mtto'] = pd.to_datetime(df['Fecha_Mtto'], errors='coerce')
-    
-    df.loc[df['Fecha_Mtto'].dt.year <= 1970, 'Fecha_Mtto'] = pd.NaT
-    df = df[~df['Codigo_Match'].str.lower().isin(['equipo', 'codigo', 'código'])]
-    
-    df = df.sort_values(by=['Codigo_Match', 'Fecha_Mtto'], ascending=[True, False])
-    df = df.drop_duplicates(subset=['Codigo_Match'], keep='first')
-    
-    return df[['Codigo_Match', 'hr_Mtto', 'km_Mtto', 'Fecha_Mtto']]
+        if not col_cod or 'ESTADO' not in df.columns or 'FALLA' not in df.columns: 
+            return df_v
+            
+        if 'COMPONENTE' not in df.columns: df['COMPONENTE'] = "SIN DATO"
+        
+        df['ESTADO'] = df['ESTADO'].astype(str).str.strip().str.upper()
+        df = df[df['ESTADO'].isin(["PENDIENTE TRASLADO", "PENDIENTE TÉCNICO", "PENDIENTE REPUESTO", "EN REVISIÓN"])].copy()
+        df.rename(columns={col_cod: 'Cod Equipo', 'FALLA': 'Falla', 'ESTADO': 'Estado Falla'}, inplace=True)
+        
+        for col in ['Cod Equipo', 'Falla', 'COMPONENTE']:
+            df[col] = df[col].astype(str).str.strip().str.upper() if col != 'Falla' else df[col].astype(str).str.strip()
+        return df[['Cod Equipo', 'COMPONENTE', 'Estado Falla', 'Falla']]
+    except: return df_v
 
-limpiar_archivos_viejos()
-
-# --- 3. INTERFAZ ---
-varados_guardados = cargar_varados()
-
-# ==========================================
-# SECCIÓN 1: PLANTILLA (BARRA LATERAL)
-# ==========================================
-st.sidebar.title("⚙️ Base de Datos Maestra")
-st.sidebar.info("Sube aquí el archivo PLANTILLA. Se quedará guardado temporalmente para cruzarlo con tus reportes diarios.")
-
-# El parámetro "key" separa esta subida de la del centro
-archivo_plantilla = st.sidebar.file_uploader("📥 Subir PLANTILLA (.xlsx)", type=["xlsx"], key="up_plantilla")
-if archivo_plantilla:
-    with open(os.path.join(CARPETA_TEMP, "plantilla_ultimo.xlsx"), "wb") as f:
-        f.write(archivo_plantilla.getbuffer())
-    st.sidebar.success("✅ Archivo PLANTILLA guardado.")
-
-ruta_plantilla = obtener_ruta_guardada("plantilla")
-if ruta_plantilla:
-    st.sidebar.success("📂 PLANTILLA activa en memoria")
-else:
-    st.sidebar.warning("⚠️ Faltan datos de Mantenimiento")
-
-
-# ==========================================
-# SECCIÓN 2: SINCO (PANTALLA PRINCIPAL)
-# ==========================================
-st.title("🚜 Auditoría de Mantenimiento Preventivo")
-st.write("Sube tu reporte diario de operación para detectar equipos atrasados y comparar con el taller.")
-st.divider()
-
-# El parámetro "key" asegura que no choque con la plantilla
-archivo_sinco = st.file_uploader("📥 Subir reporte diario SINCO (.xlsx)", type=["xlsx", "xls", "csv"], key="up_sinco")
-if archivo_sinco:
-    if "SINCOPAVIMENTOSCOL_NUEVA_InforLSVZ" not in archivo_sinco.name:
-        st.warning(f"⚠️ Atención: El archivo se llama '{archivo_sinco.name}'. Asegúrate de usar el reporte oficial.")
-    with open(os.path.join(CARPETA_TEMP, "sinco_ultimo.xlsx"), "wb") as f:
-        f.write(archivo_sinco.getbuffer())
-
-ruta_sinco = obtener_ruta_guardada("sinco")
-
-# --- 4. PROCESAMIENTO PRINCIPAL ---
-if ruta_sinco:
+def guardar_datos(df_m):
+    repo = obtener_repo_privado()
+    if not repo: return
+    df_m['Fecha_Prog'] = df_m['Fecha_Prog'].astype(str).replace('NaT', '')
+    csv_data = df_m[['ID_Unico', 'Estado', 'Fecha_Prog', 'Ejecucion_Obra']].drop_duplicates('ID_Unico').to_csv(index=False)
     try:
-        df_alertas, df_historial = analizar_datos_sinco(ruta_sinco)
-        df_maestro = df_alertas.copy()
+        cont = repo.get_contents(ARCHIVO_CSV)
+        repo.update_file(cont.path, "Update", csv_data, cont.sha)
+    except:
+        repo.create_file(ARCHIVO_CSV, "Init", csv_data)
+    st.cache_data.clear()
+    st.rerun()
 
-        # Cruce de datos seguro
-        if ruta_plantilla:
-            try:
-                df_plan = analizar_datos_plantilla(ruta_plantilla)
-                df_maestro = pd.merge(df_maestro, df_plan, on='Codigo_Match', how='left')
-            except Exception as e:
-                st.error(f"⚠️ Hubo un problema técnico al leer la plantilla: {e}")
-                df_maestro['hr_Mtto'] = pd.NA
-                df_maestro['km_Mtto'] = pd.NA
-                df_maestro['Fecha_Mtto'] = pd.NaT
+def guardar_datos_fallas(df_f):
+    repo = obtener_repo_privado()
+    if not repo: return
+    csv_data = df_f[['ID_Falla', 'Enviar_Tecnico']].drop_duplicates('ID_Falla').to_csv(index=False)
+    try:
+        cont = repo.get_contents(ARCHIVO_CSV_FALLAS)
+        repo.update_file(cont.path, "Update Fallas", csv_data, cont.sha)
+    except:
+        repo.create_file(ARCHIVO_CSV_FALLAS, "Init Fallas", csv_data)
+    st.cache_data.clear()
+    st.rerun()
+
+# --- Función Limpiadora de Ubicaciones ---
+def limpiar_ubicacion(u):
+    u_str = str(u).upper()
+    if "SIBAT" in u_str: return "Equipos Sibate"
+    if "0348" in u_str: return "IDU 0348 GRUPO 4"
+    if "0351" in u_str: return "IDU 0351 GRUPO 7"
+    return "OTRA UBICACIÓN"
+
+# --- 3. LÓGICA PRINCIPAL ---
+st.title("🛠️ Control de Repuestos y Novedades")
+
+with st.spinner('⏳ Sincronizando...'):
+    df_pedidos = cargar_excel()
+    df_est = cargar_estados()
+    df_mem = cargar_memoria()
+    df_mem_fallas = cargar_memoria_fallas()
+    df_fallas = cargar_fallas()
+
+if df_pedidos is not None:
+    st.success("✅ Sistema Sincronizado", icon="📡")
+    try:
+        # --- LIMPIEZA EXCEL PRINCIPAL (PEDIDOS) ---
+        df_pedidos.rename(columns={
+            df_pedidos.columns[0]: 'Cód insumo', 
+            df_pedidos.columns[1]: 'Producto', 
+            df_pedidos.columns[4]: 'UBICACION_PEDIDO', # Tomamos la ubicación directamente de Pedidos
+            df_pedidos.columns[6]: 'Cod Equipo', 
+            df_pedidos.columns[17]: 'Fecha_Llegada'
+        }, inplace=True)
+        
+        for c in ['Cód insumo', 'Producto', 'Cod Equipo']: 
+            df_pedidos[c] = df_pedidos[c].astype(str).str.strip().str.upper()
+            
+        excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
+                   "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
+        
+        # Filtro inicial buscando las obras en la columna UBICACION_PEDIDO
+        mask = (~df_pedidos['Producto'].str.contains('|'.join(excluir), case=False, na=False)) & \
+               (df_pedidos['UBICACION_PEDIDO'].astype(str).str.contains("SIBAT|0348|0351", case=False, na=False)) & \
+               (~df_pedidos['Cod Equipo'].str.startswith('3')) & (df_pedidos['Cod Equipo'] != "A.C.PM") & \
+               (pd.to_numeric(df_pedidos.iloc[:, 11], errors='coerce') > 0) & (df_pedidos['Fecha_Llegada'].notna())
+
+        df_base = df_pedidos[mask].copy()
+        df_base['ID_Unico'] = df_base['Producto'] + df_base['Cod Equipo']
+        df_base['BUSQUEDA_TOTAL'] = df_base['Cód insumo'] + " " + df_base['Producto'] + " " + df_base['Cod Equipo']
+        df_base['Fecha_Llegada'] = pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')
+        df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
+        
+        # Aplicamos la limpieza estricta a los repuestos
+        df_base['Ubicación Equipo'] = df_base['UBICACION_PEDIDO'].apply(limpiar_ubicacion)
+
+        # --- UBICACIONES NOVEDADES (ARCHIVO DE ESTADOS) ---
+        if df_est is not None and not df_est.empty:
+            df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
+            col_eq_est = df_est.columns[0]
+            for col in df_est.columns:
+                if "CÓD" in col or "COD" in col or "EQUIPO" in col: col_eq_est = col; break
+            
+            col_obra = df_est.columns[5] if len(df_est.columns) > 5 else df_est.columns[-1]
+            for col in df_est.columns:
+                if "UBICACI" in col or "OBRA" in col or "ASIGNAC" in col: col_obra = col; break
+
+            df_ubi = df_est[[col_eq_est, col_obra]].copy()
+            df_ubi.columns = ['Cod Equipo', 'UBICACIÓN_RAW']
+            df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
+            df_ubi['Ubicación Equipo'] = df_ubi['UBICACIÓN_RAW'].apply(limpiar_ubicacion)
+            df_ubi = df_ubi.drop_duplicates('Cod Equipo', keep='last')
         else:
-            df_maestro['hr_Mtto'] = pd.NA
-            df_maestro['km_Mtto'] = pd.NA
-            df_maestro['Fecha_Mtto'] = pd.NaT
+            df_ubi = pd.DataFrame(columns=['Cod Equipo', 'UBICACIÓN_RAW', 'Ubicación Equipo'])
 
-        st.divider()
-        busqueda = st.text_input("🔍 Buscar equipo (Escribe parte del nombre o código):")
+        # Cruzar Novedades con la Ubicación limpia del archivo de Estados
+        df_fallas = pd.merge(df_fallas, df_ubi[['Cod Equipo', 'Ubicación Equipo']], on='Cod Equipo', how='left')
         
-        df_maestro['¿Varado?'] = df_maestro['Equipo'].isin(varados_guardados)
-        if busqueda:
-            df_maestro = df_maestro[df_maestro['Equipo'].str.contains(busqueda, case=False, na=False)]
-        
-        columnas_ordenadas = [
-            "¿Varado?", "Equipo", "Fecha vale", "Días sin actualizar", 
-            "hr Equipo", "hr_Mtto", "km Equipo", "km_Mtto", "Fecha_Mtto"
-        ]
-        
-        df_criticos = df_maestro[~df_maestro['¿Varado?']][columnas_ordenadas].copy()
-        df_varados = df_maestro[df_maestro['¿Varado?']][columnas_ordenadas].copy()
+        # Cruzar Repuestos para traerles solo el COMPONENTE (si lo hay) de Novedades
+        df_comp = df_fallas[['Cod Equipo', 'COMPONENTE']].drop_duplicates('Cod Equipo', keep='last') if not df_fallas.empty else pd.DataFrame(columns=['Cod Equipo','COMPONENTE'])
+        df_base = pd.merge(df_base, df_comp, on='Cod Equipo', how='left')
 
-        t1, t2 = st.tabs(["🚨 Alertas Críticas", "🔧 Equipos en Taller"])
-        
-        config_columnas = {
-            "¿Varado?": st.column_config.CheckboxColumn("🔧", help="Marcar/Desmarcar"),
-            "Equipo": st.column_config.TextColumn("Equipo (SINCO)"),
-            "Fecha vale": st.column_config.DateColumn("Últ. Reporte (SINCO)", format="DD/MM/YYYY"),
-            "Días sin actualizar": st.column_config.NumberColumn("Días Atraso", format="%d 🔴"),
-            "hr Equipo": st.column_config.NumberColumn("hr (SINCO)"),
-            "hr_Mtto": st.column_config.NumberColumn("hr (PLANTILLA)", format="%d 🛠️"),
-            "km Equipo": st.column_config.NumberColumn("km (SINCO)"),
-            "km_Mtto": st.column_config.NumberColumn("km (PLANTILLA)", format="%d 🛠️"),
-            "Fecha_Mtto": st.column_config.DateColumn("Fecha Mtto (PLANTILLA)", format="DD/MM/YYYY")
-        }
+        df_base['COMPONENTE'] = df_base['COMPONENTE'].fillna('SIN DATO')
+        df_fallas['Ubicación Equipo'] = df_fallas['Ubicación Equipo'].fillna('SIN DATO')
 
-        columnas_bloqueadas = [col for col in columnas_ordenadas if col != "¿Varado?"]
+        # --- MEMORIA REPUESTOS ---
+        if not df_mem.empty:
+            df_mem['ID_Unico'] = df_mem['ID_Unico'].astype(str)
+            df_full = pd.merge(df_base, df_mem, on='ID_Unico', how='left')
+        else:
+            df_full = df_base.copy()
+            df_full['Estado'], df_full['Fecha_Prog'], df_full['Ejecucion_Obra'] = 'PENDIENTE', None, False
+
+        df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
+        df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce') 
+        df_full['Ejecucion_Obra'] = df_full['Ejecucion_Obra'].fillna(False).astype(bool)
+        df_full['Prioridad'] = df_full['Días en Almacén'].apply(lambda x: "🔴 Crítico" if x > 30 else "🟢 Normal")
+
+        # --- MEMORIA NOVEDADES ---
+        if not df_fallas.empty:
+            df_fallas['ID_Falla'] = df_fallas['Cod Equipo'] + " - " + df_fallas['Falla']
+            if not df_mem_fallas.empty:
+                df_fallas = pd.merge(df_fallas, df_mem_fallas, on='ID_Falla', how='left')
+            else:
+                df_fallas['Enviar_Tecnico'] = False
+            df_fallas['Enviar_Tecnico'] = df_fallas['Enviar_Tecnico'].fillna(False).astype(bool)
+
+        # --- PANEL E INTERFAZ ---
+        st.sidebar.download_button("📥 Descargar CSV", df_full.to_csv(index=False).encode('utf-8-sig'), "Repuestos.csv", "text/csv")
+        txt_busq = st.sidebar.text_input("🔍 Buscador General", placeholder="Ej: 1661").upper().strip()
+        
+        df_view, df_fview = df_full.copy(), df_fallas.copy()
+        if txt_busq:
+            df_view = df_view[df_view['BUSQUEDA_TOTAL'].str.contains(txt_busq, na=False) | df_view['Ubicación Equipo'].str.contains(txt_busq, case=False, na=False)]
+            df_fview = df_fview[df_fview.apply(lambda r: txt_busq in str(r.values).upper(), axis=1)]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🚨 Pendientes", len(df_view[df_view['Estado']=='PENDIENTE']))
+        c2.metric("🛡️ Reserva", len(df_view[df_view['Estado']=='RESERVA']))
+        c3.metric("✅ Completados", len(df_view[df_view['Estado']=='COMPLETADO']))
+        c4.metric("📋 Novedades", len(df_fview), delta="Google Sheets", delta_color="inverse")
+        
+        t1, t2, t3, t4 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES"])
+        
+        cols_v = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Ubicación Equipo', 'Días en Almacén']
+        
+        cfg = {"Sel": st.column_config.CheckboxColumn(width="small"), 
+               "Ejecucion_Obra": st.column_config.CheckboxColumn("🏗️ En Obra", width="small"),
+               "Prioridad": st.column_config.TextColumn(width="small"), 
+               "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
+               "Ubicación Equipo": st.column_config.TextColumn("📍 Ubicación Equipo", width="medium")}
 
         with t1:
-            if not df_criticos.empty:
-                res = st.data_editor(df_criticos, column_config=config_columnas, hide_index=True, use_container_width=True, key="edit_c", disabled=columnas_bloqueadas)
-                marcados = res[res['¿Varado?']]['Equipo'].tolist()
-                if marcados:
-                    guardar_varados(list(set(varados_guardados + marcados)))
-                    st.rerun()
-            else: st.success("✅ Sin alertas activas.")
+            df_p = df_view[df_view['Estado']=='PENDIENTE'].sort_values('Días en Almacén', ascending=False)
+            if not df_p.empty:
+                df_p.insert(0, "Sel", False)
+                ed_p = st.data_editor(df_p[['Sel', 'Ejecucion_Obra', 'Fecha_Prog'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
+                
+                if st.button("💾 Guardar Cambios", type="primary"):
+                    for i, r in ed_p.iterrows():
+                        df_full.loc[df_full['ID_Unico'] == df_p.loc[i, 'ID_Unico'], ['Fecha_Prog', 'Ejecucion_Obra']] = [r['Fecha_Prog'], r['Ejecucion_Obra']]
+                    guardar_datos(df_full)
+                    
+                sel = ed_p[ed_p['Sel']]
+                if not sel.empty:
+                    b1, b2 = st.columns(2)
+                    ids = df_p.loc[sel.index, 'ID_Unico']
+                    if b1.button("✅ COMPLETADO"): 
+                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
+                        guardar_datos(df_full)
+                    if b2.button("🛡️ RESERVA"):
+                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
+                        guardar_datos(df_full)
+            else: st.info("Todo limpio.")
 
         with t2:
-            if not df_varados.empty:
-                res_v = st.data_editor(df_varados, column_config=config_columnas, hide_index=True, use_container_width=True, key="edit_v", disabled=columnas_bloqueadas)
-                desmarcados = res_v[~res_v['¿Varado?']]['Equipo'].tolist()
-                if desmarcados:
-                    nueva_lista = [e for e in varados_guardados if e not in desmarcados]
-                    guardar_varados(nueva_lista)
-                    st.rerun()
-            else: st.info("Taller vacío.")
+            df_r = df_view[df_view['Estado']=='RESERVA']
+            if not df_r.empty:
+                df_r.insert(0, "Sel", False)
+                ed_r = st.data_editor(df_r[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
+                sel_r = ed_r[ed_r['Sel']]
+                if not sel_r.empty and st.button("🔙 PENDIENTE", key="r_to_p"):
+                    df_full.loc[df_full['ID_Unico'].isin(df_r.loc[sel_r.index, 'ID_Unico']), 'Estado'] = 'PENDIENTE'
+                    guardar_datos(df_full)
+            else: st.info("Vacío.")
 
-        # Gráfica de Picos
-        st.divider()
-        st.subheader("📈 Análisis de Picos de Horas")
-        eq_sel = st.selectbox("Seleccionar equipo para ver historial:", ["(Seleccionar)"] + sorted(df_historial['Equipo'].unique().tolist()))
-        
-        if eq_sel != "(Seleccionar)":
-            hist = df_historial[df_historial['Equipo'] == eq_sel].sort_values('Fecha vale')
-            if len(hist) >= 2:
-                hist['Pico Horas'] = hist['hr Equipo'].diff()
-                st.bar_chart(hist.dropna(subset=['Pico Horas']).set_index('Fecha vale')['Pico Horas'])
+        with t3:
+            df_c = df_view[df_view['Estado']=='COMPLETADO']
+            if not df_c.empty:
+                df_c.insert(0, "Sel", False)
+                ed_c = st.data_editor(df_c[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
+                sel_c = ed_c[ed_c['Sel']]
+                if not sel_c.empty:
+                    st.warning("⚠️ Corrección")
+                    b1, b2 = st.columns(2)
+                    ids_c = df_c.loc[sel_c.index, 'ID_Unico']
+                    if b1.button("🔙 PENDIENTE", key="c_p"): df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'; guardar_datos(df_full)
+                    if b2.button("🛡️ RESERVA", key="c_r"): df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'RESERVA'; guardar_datos(df_full)
+            else: st.info("Vacío.")
+
+        with t4:
+            if not df_fview.empty:
+                ubicaciones_disponibles = sorted(df_fview['Ubicación Equipo'].dropna().unique())
+                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
                 
-                if ruta_plantilla:
-                    try:
-                        df_plan = analizar_datos_plantilla(ruta_plantilla)
-                        cod_match = eq_sel.split('-')[0].strip()
-                        info_p = df_plan[df_plan['Codigo_Match'] == cod_match]
-                        
-                        if not info_p.empty:
-                            c_a, c_b = st.columns(2)
-                            c_a.metric("Último Mtto (hr)", f"{info_p.iloc[0]['hr_Mtto']:,}" if pd.notna(info_p.iloc[0]['hr_Mtto']) else "N/A")
-                            c_b.metric("Fecha Último Mtto", info_p.iloc[0]['Fecha_Mtto'].strftime('%d/%m/%Y') if pd.notna(info_p.iloc[0]['Fecha_Mtto']) else "N/A")
-                    except: pass
-            else:
-                st.warning("No hay suficientes datos históricos para este equipo.")
+                df_fview_filtrado = df_fview.copy()
+                if filtro_ubi:
+                    df_fview_filtrado = df_fview_filtrado[df_fview_filtrado['Ubicación Equipo'].isin(filtro_ubi)]
 
-    except Exception as e:
-        st.error(f"❌ Error crítico procesando los datos: {e}")
-else:
-    st.info("💡 Por favor, sube el reporte diario SINCO en el recuadro de arriba para comenzar.")
+                if df_fview_filtrado.empty:
+                    st.warning("No hay novedades en la ubicación seleccionada.")
+                else:
+                    with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
+                        g1, g2, g3 = st.columns(3)
+                        
+                        df_ubi_chart = df_fview_filtrado.groupby('Ubicación Equipo')['Cod Equipo'].nunique().reset_index(name='Cantidad')
+                        chart_ubi = alt.Chart(df_ubi_chart).mark_bar(color="#ff4b4b").encode(
+                            x=alt.X('Ubicación Equipo:N', sort='-y', title='Ubicación'),
+                            y=alt.Y('Cantidad:Q', title='Equipos')
+                        )
+                        g1.markdown("📍 **Equipos por Ubicación**")
+                        g1.altair_chart(chart_ubi, use_container_width=True)
+                        
+                        df_comp_chart = df_fview_filtrado.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')
+                        chart_comp = alt.Chart(df_comp_chart).mark_bar(color="#1f77b4").encode(
+                            x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
+                            y=alt.Y('Cantidad:Q', title='Equipos')
+                        )
+                        g2.markdown("⚙️ **Equipos por Componente**")
+                        g2.altair_chart(chart_comp, use_container_width=True)
+
+                        df_tec_chart = df_fview_filtrado['Enviar_Tecnico'].value_counts().reset_index()
+                        df_tec_chart.columns = ['Estado', 'Cantidad']
+                        df_tec_chart['Estado'] = df_tec_chart['Estado'].map({True: 'En Obra', False: 'Taller / Pendiente'})
+                        chart_tec = alt.Chart(df_tec_chart).mark_bar(color="#2ca02c").encode(
+                            x=alt.X('Estado:N', sort='-y', title='Resolución'),
+                            y=alt.Y('Cantidad:Q', title='Actividades')
+                        )
+                        g3.markdown("👷 **Actividades en Obra**")
+                        g3.altair_chart(chart_tec, use_container_width=True)
+                    
+                    cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'Ubicación Equipo']
+                    ed_f = st.data_editor(
+                        df_fview_filtrado[['Enviar_Tecnico'] + cols_f],
+                        column_config={
+                            "Enviar_Tecnico": st.column_config.CheckboxColumn("👷 ENVIAR TÉCNICO A OBRA", width="medium"),
+                            "Cod Equipo": st.column_config.TextColumn("CÓD"),
+                            "COMPONENTE": st.column_config.TextColumn("Componente"),
+                            "Falla": st.column_config.TextColumn("Falla Reportada"),
+                            "Ubicación Equipo": st.column_config.TextColumn("Ubicación actual")
+                        },
+                        disabled=cols_f, hide_index=True, key="ed_f"
+                    )
+
+                    if st.button("💾 Guardar Gestión de Novedades", type="primary", key="btn_save_fallas"):
+                        for i, r in ed_f.iterrows():
+                            id_f = df_fview_filtrado.loc[i, 'ID_Falla']
+                            df_fallas.loc[df_fallas['ID_Falla'] == id_f, 'Enviar_Tecnico'] = r['Enviar_Tecnico']
+                        guardar_datos_fallas(df_fallas)
+            else: st.info("Vacío.")
+
+    except Exception as e: st.error(f"❌ Error: {e}")
+else: st.warning("⚠️ Sin datos.")
