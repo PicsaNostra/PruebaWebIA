@@ -8,6 +8,18 @@ import altair as alt
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestor Repuestos Pro", layout="wide", page_icon="🛠️")
 
+# Estilo CSS para expandir la tabla y ajustar el buscador
+st.markdown("""
+    <style>
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 0rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 REPO_DATOS = "PicsaNostra/DatosRepuestos" 
 ARCHIVO_EXCEL = "PEDIDOS.xlsx"
 ARCHIVO_ESTADOS = "ESTADOS%20DE%20EQUIPOS.xlsx" 
@@ -116,6 +128,7 @@ def limpiar_ubicacion(u):
 # --- 3. LÓGICA PRINCIPAL ---
 st.title("🛠️ Control de Repuestos y Novedades")
 
+# Carga de datos
 with st.spinner('⏳ Sincronizando...'):
     df_pedidos = cargar_excel()
     df_est = cargar_estados()
@@ -124,15 +137,14 @@ with st.spinner('⏳ Sincronizando...'):
     df_fallas = cargar_fallas()
 
 if df_pedidos is not None:
-    st.success("✅ Sistema Sincronizado", icon="📡")
     try:
-        # --- LIMPIEZA EXCEL PRINCIPAL (PEDIDOS) ---
+        # --- PROCESAMIENTO ---
         df_pedidos.rename(columns={
             df_pedidos.columns[0]: 'Cód insumo', 
             df_pedidos.columns[1]: 'Producto', 
             df_pedidos.columns[4]: 'UBICACION_PEDIDO',
             df_pedidos.columns[6]: 'Cod Equipo',
-            df_pedidos.columns[8]: 'Cantidad', # NUEVA COLUMNA (COL I)
+            df_pedidos.columns[8]: 'Cantidad',
             df_pedidos.columns[17]: 'Fecha_Llegada'
         }, inplace=True)
         
@@ -154,15 +166,11 @@ if df_pedidos is not None:
         df_base['Días en Almacén'] = (datetime.now() - df_base['Fecha_Llegada']).dt.days.fillna(0).astype(int).clip(lower=0)
         df_base['Ubicación Equipo'] = df_base['UBICACION_PEDIDO'].apply(limpiar_ubicacion)
 
-        # --- UBICACIONES NOVEDADES (ARCHIVO DE ESTADOS) ---
+        # Ubicaciones para Novedades
         if df_est is not None and not df_est.empty:
             df_est.columns = df_est.columns.astype(str).str.strip().str.upper()
             col_eq_est = df_est.columns[0]
-            for col in df_est.columns:
-                if "CÓD" in col or "COD" in col or "EQUIPO" in col: col_eq_est = col; break
             col_obra = df_est.columns[5] if len(df_est.columns) > 5 else df_est.columns[-1]
-            for col in df_est.columns:
-                if "UBICACI" in col or "OBRA" in col or "ASIGNAC" in col: col_obra = col; break
             df_ubi = df_est[[col_eq_est, col_obra]].copy()
             df_ubi.columns = ['Cod Equipo', 'UBICACIÓN_RAW']
             df_ubi['Cod Equipo'] = df_ubi['Cod Equipo'].astype(str).str.strip().str.upper()
@@ -177,7 +185,6 @@ if df_pedidos is not None:
         df_base['COMPONENTE'] = df_base['COMPONENTE'].fillna('SIN DATO')
         df_fallas['Ubicación Equipo'] = df_fallas['Ubicación Equipo'].fillna('SIN DATO')
 
-        # --- MEMORIA REPUESTOS ---
         if not df_mem.empty:
             df_mem['ID_Unico'] = df_mem['ID_Unico'].astype(str)
             df_full = pd.merge(df_base, df_mem, on='ID_Unico', how='left')
@@ -189,7 +196,6 @@ if df_pedidos is not None:
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce') 
         df_full['Prioridad'] = df_full['Días en Almacén'].apply(lambda x: "🔴 Crítico" if x > 30 else "🟢 Normal")
 
-        # --- MEMORIA NOVEDADES ---
         if not df_fallas.empty:
             df_fallas['ID_Falla'] = df_fallas['Cod Equipo'] + " - " + df_fallas['Falla']
             if not df_mem_fallas.empty:
@@ -198,135 +204,95 @@ if df_pedidos is not None:
                 df_fallas['Enviar_Tecnico'] = False
             df_fallas['Enviar_Tecnico'] = df_fallas['Enviar_Tecnico'].fillna(False).astype(bool)
 
-        # --- PANEL E INTERFAZ ---
-        st.sidebar.download_button("📥 Descargar CSV", df_full.to_csv(index=False).encode('utf-8-sig'), "Repuestos.csv", "text/csv")
-        txt_busq = st.sidebar.text_input("🔍 Buscador General", placeholder="Ej: 1661").upper().strip()
+        # --- CABECERA DE FILTROS ---
+        col_search, col_spacer = st.columns([1, 2])
+        with col_search:
+            txt_busq = st.text_input("🔍 Buscador (Cód, Producto o Equipo)", placeholder="Ej: 1661").upper().strip()
         
         df_view, df_fview = df_full.copy(), df_fallas.copy()
         if txt_busq:
             df_view = df_view[df_view['BUSQUEDA_TOTAL'].str.contains(txt_busq, na=False) | df_view['Ubicación Equipo'].str.contains(txt_busq, case=False, na=False)]
             df_fview = df_fview[df_fview.apply(lambda r: txt_busq in str(r.values).upper(), axis=1)]
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("🚨 Pendientes", len(df_view[df_view['Estado']=='PENDIENTE']))
-        c2.metric("🛡️ Reserva", len(df_view[df_view['Estado']=='RESERVA']))
-        c3.metric("✅ Completados", len(df_view[df_view['Estado']=='COMPLETADO']))
-        c4.metric("📋 Novedades", len(df_fview), delta="Google Sheets", delta_color="inverse")
+        # Métricas rápidas
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("🚨 Pendientes", len(df_view[df_view['Estado']=='PENDIENTE']))
+        m2.metric("🛡️ Reserva", len(df_view[df_view['Estado']=='RESERVA']))
+        m3.metric("✅ Completados", len(df_view[df_view['Estado']=='COMPLETADO']))
+        m4.metric("📋 Novedades", len(df_fview))
         
         t1, t2, t3, t4 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES"])
         
-        # TABLA DE REPUESTOS: Cambiamos 'Ejecucion_Obra' por 'Cantidad'
         cols_v = ['Prioridad', 'Cód insumo', 'Producto', 'Cod Equipo', 'Ubicación Equipo', 'Cantidad', 'Días en Almacén']
-        
         cfg = {"Sel": st.column_config.CheckboxColumn(width="small"), 
                "Prioridad": st.column_config.TextColumn(width="small"), 
                "Fecha_Prog": st.column_config.DateColumn("📅 Prog", format="DD/MM/YYYY"),
                "Cantidad": st.column_config.NumberColumn("📦 Cant", format="%d"),
-               "Ubicación Equipo": st.column_config.TextColumn("📍 Ubicación Equipo", width="medium")}
+               "Ubicación Equipo": st.column_config.TextColumn("📍 Ubicación Equipo", width="large")}
 
         with t1:
             df_p = df_view[df_view['Estado']=='PENDIENTE'].sort_values('Días en Almacén', ascending=False)
             if not df_p.empty:
                 df_p.insert(0, "Sel", False)
-                # Eliminamos Ejecucion_Obra del editor
-                ed_p = st.data_editor(df_p[['Sel', 'Fecha_Prog'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
-                
+                ed_p = st.data_editor(df_p[['Sel', 'Fecha_Prog'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True, use_container_width=True)
                 if st.button("💾 Guardar Cambios", type="primary"):
                     for i, r in ed_p.iterrows():
                         df_full.loc[df_full['ID_Unico'] == df_p.loc[i, 'ID_Unico'], ['Fecha_Prog']] = [r['Fecha_Prog']]
                     guardar_datos(df_full)
-                    
                 sel = ed_p[ed_p['Sel']]
                 if not sel.empty:
                     b1, b2 = st.columns(2)
                     ids = df_p.loc[sel.index, 'ID_Unico']
-                    if b1.button("✅ COMPLETADO"): 
+                    if b1.button("✅ Mover a COMPLETADO"): 
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
                         guardar_datos(df_full)
-                    if b2.button("🛡️ RESERVA"):
+                    if b2.button("🛡️ Mover a RESERVA"):
                         df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
                         guardar_datos(df_full)
             else: st.info("Todo limpio.")
 
-        # Tabs de Reserva y Completados (también con columna Cantidad)
         with t2:
             df_r = df_view[df_view['Estado']=='RESERVA']
             if not df_r.empty:
                 df_r.insert(0, "Sel", False)
-                ed_r = st.data_editor(df_r[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
+                ed_r = st.data_editor(df_r[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True, use_container_width=True)
                 sel_r = ed_r[ed_r['Sel']]
-                if not sel_r.empty and st.button("🔙 PENDIENTE", key="r_to_p"):
+                if not sel_r.empty and st.button("🔙 Regresar a PENDIENTE"):
                     df_full.loc[df_full['ID_Unico'].isin(df_r.loc[sel_r.index, 'ID_Unico']), 'Estado'] = 'PENDIENTE'
                     guardar_datos(df_full)
-            else: st.info("Vacío.")
 
         with t3:
             df_c = df_view[df_view['Estado']=='COMPLETADO']
             if not df_c.empty:
                 df_c.insert(0, "Sel", False)
-                ed_c = st.data_editor(df_c[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True)
+                ed_c = st.data_editor(df_c[['Sel'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True, use_container_width=True)
                 sel_c = ed_c[ed_c['Sel']]
                 if not sel_c.empty:
-                    st.warning("⚠️ Corrección")
                     b1, b2 = st.columns(2)
                     ids_c = df_c.loc[sel_c.index, 'ID_Unico']
-                    if b1.button("🔙 PENDIENTE", key="c_p"): df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'; guardar_datos(df_full)
-                    if b2.button("🛡️ RESERVA", key="c_r"): df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'RESERVA'; guardar_datos(df_full)
-            else: st.info("Vacío.")
+                    if b1.button("🔙 Devolver a PENDIENTE", key="c_p"): 
+                        df_full.loc[df_full['ID_Unico'].isin(ids_c), 'Estado'] = 'PENDIENTE'
+                        guardar_datos(df_full)
 
         with t4:
             if not df_fview.empty:
-                ubicaciones_disponibles = sorted(df_fview['Ubicación Equipo'].dropna().unique())
-                filtro_ubi = st.multiselect("📍 Filtrar Novedades por Ubicación:", options=ubicaciones_disponibles, placeholder="Selecciona una o varias obras...")
-                df_fview_filtrado = df_fview.copy()
-                if filtro_ubi:
-                    df_fview_filtrado = df_fview_filtrado[df_fview_filtrado['Ubicación Equipo'].isin(filtro_ubi)]
-                if df_fview_filtrado.empty:
-                    st.warning("No hay novedades en la ubicación seleccionada.")
-                else:
-                    with st.expander("📊 Gráficos de Novedades (Ordenados)", expanded=True):
-                        g1, g2, g3 = st.columns(3)
-                        df_ubi_chart = df_fview_filtrado.groupby('Ubicación Equipo')['Cod Equipo'].nunique().reset_index(name='Cantidad')
-                        chart_ubi = alt.Chart(df_ubi_chart).mark_bar(color="#ff4b4b").encode(
-                            x=alt.X('Ubicación Equipo:N', sort='-y', title='Ubicación'),
-                            y=alt.Y('Cantidad:Q', title='Equipos')
-                        )
-                        g1.markdown("📍 **Equipos por Ubicación**")
-                        g1.altair_chart(chart_ubi, use_container_width=True)
-                        df_comp_chart = df_fview_filtrado.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')
-                        chart_comp = alt.Chart(df_comp_chart).mark_bar(color="#1f77b4").encode(
-                            x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
-                            y=alt.Y('Cantidad:Q', title='Equipos')
-                        )
-                        g2.markdown("⚙️ **Equipos por Componente**")
-                        g2.altair_chart(chart_comp, use_container_width=True)
-                        df_tec_chart = df_fview_filtrado['Enviar_Tecnico'].value_counts().reset_index()
-                        df_tec_chart.columns = ['Estado', 'Cantidad']
-                        df_tec_chart['Estado'] = df_tec_chart['Estado'].map({True: 'En Obra', False: 'Taller / Pendiente'})
-                        chart_tec = alt.Chart(df_tec_chart).mark_bar(color="#2ca02c").encode(
-                            x=alt.X('Estado:N', sort='-y', title='Resolución'),
-                            y=alt.Y('Cantidad:Q', title='Actividades')
-                        )
-                        g3.markdown("👷 **Actividades en Obra**")
-                        g3.altair_chart(chart_tec, use_container_width=True)
-                    cols_f = ['Cod Equipo', 'COMPONENTE', 'Falla', 'Ubicación Equipo']
-                    ed_f = st.data_editor(
-                        df_fview_filtrado[['Enviar_Tecnico'] + cols_f],
-                        column_config={
-                            "Enviar_Tecnico": st.column_config.CheckboxColumn("👷 ENVIAR TÉCNICO A OBRA", width="medium"),
-                            "Cod Equipo": st.column_config.TextColumn("CÓD"),
-                            "COMPONENTE": st.column_config.TextColumn("Componente"),
-                            "Falla": st.column_config.TextColumn("Falla Reportada"),
-                            "Ubicación Equipo": st.column_config.TextColumn("Ubicación actual")
-                        },
-                        disabled=cols_f, hide_index=True, key="ed_f"
-                    )
-                    if st.button("💾 Guardar Gestión de Novedades", type="primary", key="btn_save_fallas"):
-                        for i, r in ed_f.iterrows():
-                            id_f = df_fview_filtrado.loc[i, 'ID_Falla']
-                            df_fallas.loc[df_fallas['ID_Falla'] == id_f, 'Enviar_Tecnico'] = r['Enviar_Tecnico']
-                        guardar_datos_fallas(df_fallas)
-            else: st.info("Vacío.")
+                filtro_ubi = st.multiselect("📍 Filtrar por Ubicación:", options=sorted(df_fview['Ubicación Equipo'].dropna().unique()))
+                df_fv_filtrado = df_fview[df_fview['Ubicación Equipo'].isin(filtro_ubi)] if filtro_ubi else df_fview
+                
+                with st.expander("📊 Gráficos", expanded=True):
+                    g1, g2, g3 = st.columns(3)
+                    chart_ubi = alt.Chart(df_fv_filtrado).mark_bar(color="#ff4b4b").encode(x=alt.X('Ubicación Equipo:N', sort='-y'), y='count()')
+                    g1.altair_chart(chart_ubi, use_container_width=True)
+                    chart_comp = alt.Chart(df_fv_filtrado).mark_bar(color="#1f77b4").encode(x=alt.X('COMPONENTE:N', sort='-y'), y='count()')
+                    g2.altair_chart(chart_comp, use_container_width=True)
+                    chart_tec = alt.Chart(df_fv_filtrado).mark_bar(color="#2ca02c").encode(x=alt.X('Enviar_Tecnico:N', sort='-y'), y='count()')
+                    g3.altair_chart(chart_tec, use_container_width=True)
+                
+                ed_f = st.data_editor(df_fv_filtrado[['Enviar_Tecnico', 'Cod Equipo', 'COMPONENTE', 'Falla', 'Ubicación Equipo']], use_container_width=True, hide_index=True)
+                if st.button("💾 Guardar Gestión"):
+                    for i, r in ed_f.iterrows():
+                        df_fallas.loc[df_fallas['ID_Falla'] == df_fv_filtrado.loc[i, 'ID_Falla'], 'Enviar_Tecnico'] = r['Enviar_Tecnico']
+                    guardar_datos_fallas(df_fallas)
 
     except Exception as e: st.error(f"❌ Error: {e}")
 else: st.warning("⚠️ Sin datos.")
