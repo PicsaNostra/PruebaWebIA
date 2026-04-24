@@ -93,9 +93,9 @@ def cargar_fallas_gsheet():
         df.columns = df.columns.astype(str).str.strip().str.upper()
         col_cod = 'CÓD' if 'CÓD' in df.columns else ('COD' if 'COD' in df.columns else df.columns[0])
         
-        # Leemos Columna E (índice 4) y aplicamos la limpieza de novedades
-        if len(df.columns) > 4:
-            df['Ubicación Equipo'] = df.iloc[:, 4].apply(limpiar_ubicacion_novedades)
+        # --- LECTURA CORREGIDA A LA COLUMNA Q (ÍNDICE 16) ---
+        if len(df.columns) > 16:
+            df['Ubicación Equipo'] = df.iloc[:, 16].apply(limpiar_ubicacion_novedades)
         else:
             df['Ubicación Equipo'] = "SIN DATO"
             
@@ -111,7 +111,6 @@ def cargar_fallas_gsheet():
 def guardar_en_github(archivo, df_datos):
     repo = obtener_repo_privado()
     if not repo: return
-    # Aseguramos que la fecha se convierta a texto antes de guardar
     if 'Fecha_Prog' in df_datos.columns:
         df_datos['Fecha_Prog'] = df_datos['Fecha_Prog'].astype(str).replace(['NaT', 'None', 'nan'], '')
     
@@ -147,7 +146,6 @@ if df_pedidos is not None:
         excluir = ["SOLDADURA", "REMACHES", "SILICONA", "TORNILLO", "TUERCA", "GRASA", "ENGRASADOR", 
                    "FILTRO", "ABRAZADERA", "PALETA", "AMARRE", "ARANDELA", "CABLE", "CINTA", "CORAZA", "LLANTA", "PINTURA"]
         
-        # Filtro estricto de repuestos buscando las 3 obras
         mask = (~df_pedidos['Producto'].astype(str).str.contains('|'.join(excluir), case=False, na=False)) & \
                (df_pedidos['UBI_PED'].astype(str).str.contains("SIBAT|0348|0351", case=False, na=False)) & \
                (~df_pedidos['Cod Equipo'].astype(str).str.startswith('3')) & (df_pedidos['Cod Equipo'] != "A.C.PM") & \
@@ -156,12 +154,10 @@ if df_pedidos is not None:
         df_base = df_pedidos[mask].copy()
         
         df_base['ID_Unico'] = df_base['Producto'].astype(str) + df_base['Cod Equipo'].astype(str)
-        # Aquí se aplica la limpieza estricta SOLO para repuestos
         df_base['Ubicación Equipo'] = df_base['UBI_PED'].apply(limpiar_ubicacion_repuestos)
         df_base['Días en Almacén'] = (datetime.now() - pd.to_datetime(df_base['Fecha_Llegada'], errors='coerce')).dt.days.fillna(0).astype(int).clip(lower=0)
         df_base['BUSQUEDA_TOTAL'] = df_base['Cód insumo'].astype(str) + " " + df_base['Producto'].astype(str) + " " + df_base['Cod Equipo'].astype(str)
 
-        # Unir Memoria de Repuestos
         if not df_mem_rep.empty:
             df_mem_rep['ID_Unico'] = df_mem_rep['ID_Unico'].astype(str)
             df_full = pd.merge(df_base, df_mem_rep[['ID_Unico', 'Estado', 'Fecha_Prog']], on='ID_Unico', how='left')
@@ -169,9 +165,7 @@ if df_pedidos is not None:
             df_full = df_base.copy()
             df_full['Estado'], df_full['Fecha_Prog'] = 'PENDIENTE', None
 
-        # --- SEGURO ANTI-FLOAT PARA LA FECHA ---
         df_full['Estado'] = df_full['Estado'].fillna('PENDIENTE')
-        # Obligamos a que sea un objeto 'date' puro o un None para que el editor de Streamlit no explote
         df_full['Fecha_Prog'] = pd.to_datetime(df_full['Fecha_Prog'], errors='coerce')
         df_full['Fecha_Prog'] = df_full['Fecha_Prog'].apply(lambda x: x.date() if pd.notnull(x) else None)
         df_full['Prioridad'] = df_full['Días en Almacén'].apply(lambda x: "🔴 Crítico" if x > 30 else "🟢 Normal")
@@ -233,12 +227,8 @@ if df_pedidos is not None:
                 if not sel.empty:
                     c1, c2 = st.columns(2)
                     ids = df_p.loc[sel.index, 'ID_Unico']
-                    if c1.button("✅ Mover a COMPLETADO"): 
-                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'
-                        guardar_en_github(ARCHIVO_CSV, df_full[['ID_Unico', 'Estado', 'Fecha_Prog']])
-                    if c2.button("🛡️ Mover a RESERVA"): 
-                        df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'
-                        guardar_en_github(ARCHIVO_CSV, df_full[['ID_Unico', 'Estado', 'Fecha_Prog']])
+                    if c1.button("✅ COMPLETADO"): df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'COMPLETADO'; guardar_en_github(ARCHIVO_CSV, df_full[['ID_Unico', 'Estado', 'Fecha_Prog']])
+                    if c2.button("🛡️ RESERVA"): df_full.loc[df_full['ID_Unico'].isin(ids), 'Estado'] = 'RESERVA'; guardar_en_github(ARCHIVO_CSV, df_full[['ID_Unico', 'Estado', 'Fecha_Prog']])
             else: st.info("Todo limpio.")
 
         # 2. RESERVA
@@ -261,7 +251,7 @@ if df_pedidos is not None:
 
         # 3. COMPLETADOS
         with t3:
-            df_c = df_v[df_view['Estado']=='COMPLETADO'] if 'df_view' in locals() else df_v[df_v['Estado']=='COMPLETADO']
+            df_c = df_v[df_v['Estado']=='COMPLETADO']
             if not df_c.empty:
                 df_c.insert(0, "Sel", False)
                 ed_c = st.data_editor(df_c[['Sel', 'Fecha_Prog'] + cols_v], column_config=cfg, disabled=cols_v, hide_index=True, use_container_width=True)
