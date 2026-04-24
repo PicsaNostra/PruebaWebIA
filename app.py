@@ -219,7 +219,7 @@ if df_pedidos is not None:
         m1.metric("🚨 Pendientes", len(df_view[df_view['Estado']=='PENDIENTE']))
         m2.metric("🛡️ Reserva", len(df_view[df_view['Estado']=='RESERVA']))
         m3.metric("✅ Completados", len(df_view[df_view['Estado']=='COMPLETADO']))
-        m4.metric("📋 Novedades", len(df_fview))
+        m4.metric("📋 Novedades", len(df_fview), delta="Google Sheets", delta_color="inverse")
         
         t1, t2, t3, t4 = st.tabs(["🚨 PENDIENTES", "🛡️ RESERVA", "✅ COMPLETADOS", "📋 NOVEDADES"])
         
@@ -281,12 +281,31 @@ if df_pedidos is not None:
                 
                 with st.expander("📊 Gráficos", expanded=True):
                     g1, g2, g3 = st.columns(3)
-                    chart_ubi = alt.Chart(df_fv_filtrado).mark_bar(color="#ff4b4b").encode(x=alt.X('Ubicación Equipo:N', sort='-y'), y='count()')
+                    
+                    # Gráfico 1: Equipos únicos por Ubicación
+                    chart_ubi = alt.Chart(df_fv_filtrado.groupby('Ubicación Equipo')['Cod Equipo'].nunique().reset_index(name='Cantidad')).mark_bar(color="#ff4b4b").encode(
+                        x=alt.X('Ubicación Equipo:N', sort='-y', title='Ubicación'),
+                        y=alt.Y('Cantidad:Q', title='Equipos Afectados')
+                    )
+                    g1.markdown("📍 **Equipos por Ubicación**")
                     g1.altair_chart(chart_ubi, use_container_width=True)
-                    chart_comp = alt.Chart(df_fv_filtrado).mark_bar(color="#1f77b4").encode(x=alt.X('COMPONENTE:N', sort='-y'), y='count()')
+                    
+                    # Gráfico 2: Equipos por Componente
+                    chart_comp = alt.Chart(df_fv_filtrado.groupby('COMPONENTE')['Cod Equipo'].nunique().reset_index(name='Cantidad')).mark_bar(color="#1f77b4").encode(
+                        x=alt.X('COMPONENTE:N', sort='-y', title='Componente'),
+                        y=alt.Y('Cantidad:Q', title='Equipos')
+                    )
+                    g2.markdown("⚙️ **Equipos por Componente**")
                     g2.altair_chart(chart_comp, use_container_width=True)
-                    chart_tec = alt.Chart(df_fv_filtrado).mark_bar(color="#2ca02c").encode(x=alt.X('Enviar_Tecnico:N', sort='-y'), y='count()')
-                    g3.altair_chart(chart_tec, use_container_width=True)
+
+                    # Gráfico 3 (NUEVO): Total de Fallas por Ubicación
+                    df_fallas_chart = df_fv_filtrado.groupby('Ubicación Equipo')['ID_Falla'].nunique().reset_index(name='Cantidad')
+                    chart_fallas = alt.Chart(df_fallas_chart).mark_bar(color="#2ca02c").encode(
+                        x=alt.X('Ubicación Equipo:N', sort='-y', title='Ubicación'),
+                        y=alt.Y('Cantidad:Q', title='Nº de Fallas')
+                    )
+                    g3.markdown("🚨 **Total Fallas por Ubicación**")
+                    g3.altair_chart(chart_fallas, use_container_width=True)
                 
                 ed_f = st.data_editor(df_fv_filtrado[['Enviar_Tecnico', 'Cod Equipo', 'COMPONENTE', 'Falla', 'Ubicación Equipo']], use_container_width=True, hide_index=True)
                 if st.button("💾 Guardar Gestión"):
